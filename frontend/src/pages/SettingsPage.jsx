@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { KeyRound, Shield, Sliders, Info, Zap } from 'lucide-react';
+import { KeyRound, Shield, Sliders, Info, Zap, Target } from 'lucide-react';
 import api from '../api/client';
 
 export default function SettingsPage() {
@@ -14,8 +14,25 @@ export default function SettingsPage() {
   const [validation, setValidation] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  // ── Owner (Personal) Trading Rules ──
+  const [ownerSettings, setOwnerSettings] = useState({
+    starting_capital_usd: 100,
+    daily_profit_target_pct: 5,
+    hard_stop_loss_pct: 2,
+    max_position_pct: 80,
+    trade_once_per_session: true,
+    max_hold_hours: 6,
+  });
+  const [ownerSaving, setOwnerSaving] = useState(false);
+  const [ownerMsg, setOwnerMsg] = useState(null);
+
   useEffect(() => {
     api.getConfig().then(setConfig).catch(() => {});
+    // Load owner settings
+    fetch('/api/owner/settings')
+      .then(r => r.json())
+      .then(d => setOwnerSettings(d))
+      .catch(() => {});
   }, []);
 
   async function handleSave() {
@@ -38,6 +55,26 @@ export default function SettingsPage() {
       setValidation({ success: false, msg: err.message });
     }
     setSaving(false);
+  }
+
+  async function handleOwnerSave() {
+    setOwnerSaving(true);
+    setOwnerMsg(null);
+    try {
+      const res = await fetch('/api/owner/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ownerSettings),
+      });
+      if (res.ok) {
+        setOwnerMsg({ success: true, msg: 'Personal trading rules saved!' });
+      } else {
+        setOwnerMsg({ success: false, msg: 'Save failed. Check backend.' });
+      }
+    } catch (e) {
+      setOwnerMsg({ success: false, msg: e.message });
+    }
+    setOwnerSaving(false);
   }
 
   return (
@@ -237,6 +274,101 @@ export default function SettingsPage() {
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* ── Owner Personal Trading Rules ── */}
+      <div className="card" style={{ borderColor: 'var(--accent-bull)', borderWidth: 1, borderStyle: 'solid' }}>
+        <div className="card-header">
+          <span className="card-title"><Target size={13} style={{ marginRight: 6, color: 'var(--accent-bull)' }} /> Personal Trading Rules</span>
+          <span style={{ fontSize: '10px', color: 'var(--accent-bull)', background: 'rgba(38,166,154,0.12)', padding: '2px 8px', borderRadius: 100 }}>OWNER ONLY</span>
+        </div>
+
+        <div style={{ padding: '8px 0' }}>
+          {/* Live preview */}
+          <div style={{
+            padding: '10px 14px', borderRadius: 'var(--radius-md)', marginBottom: 16,
+            background: 'rgba(38,166,154,0.08)', fontSize: '12px', color: 'var(--accent-bull)',
+            display: 'flex', alignItems: 'center', gap: 8
+          }}>
+            <Target size={14} />
+            On <strong>${ownerSettings.starting_capital_usd.toFixed(2)}</strong> capital →
+            &nbsp;Target: <strong>+${(ownerSettings.starting_capital_usd * ownerSettings.daily_profit_target_pct / 100).toFixed(4)}</strong>
+            &nbsp;| Stop: <strong>-${(ownerSettings.starting_capital_usd * ownerSettings.hard_stop_loss_pct / 100).toFixed(4)}</strong>
+            &nbsp;| Min Z ≥ <strong>{ownerSettings.daily_profit_target_pct < 5 ? '1.5' : ownerSettings.daily_profit_target_pct < 15 ? '1.8' : ownerSettings.daily_profit_target_pct < 30 ? '2.0' : ownerSettings.daily_profit_target_pct < 50 ? '2.3' : '2.5'}</strong>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="form-group">
+              <label>Starting Capital (USD)</label>
+              <input type="number" min="1" step="0.01"
+                value={ownerSettings.starting_capital_usd}
+                onChange={e => setOwnerSettings(s => ({ ...s, starting_capital_usd: parseFloat(e.target.value) || 0 }))}
+              />
+              <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>₹1000 ≈ $11.90 USD</span>
+            </div>
+
+            <div className="form-group">
+              <label>Max Position Size (%)</label>
+              <input type="number" min="1" max="100" step="1"
+                value={ownerSettings.max_position_pct}
+                onChange={e => setOwnerSettings(s => ({ ...s, max_position_pct: parseFloat(e.target.value) || 10 }))}
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Profit Target (%)</label>
+              <input type="number" min="0.1" max="500" step="0.1"
+                value={ownerSettings.daily_profit_target_pct}
+                onChange={e => setOwnerSettings(s => ({ ...s, daily_profit_target_pct: parseFloat(e.target.value) || 1 }))}
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Hard Stop Loss (%)</label>
+              <input type="number" min="0.1" max="100" step="0.1"
+                value={ownerSettings.hard_stop_loss_pct}
+                onChange={e => setOwnerSettings(s => ({ ...s, hard_stop_loss_pct: parseFloat(e.target.value) || 1 }))}
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Max Hold Time (hours)</label>
+              <input type="number" min="0.5" max="24" step="0.5"
+                value={ownerSettings.max_hold_hours}
+                onChange={e => setOwnerSettings(s => ({ ...s, max_hold_hours: parseFloat(e.target.value) || 6 }))}
+              />
+            </div>
+
+            <div className="form-group" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+              <div className="toggle-row" style={{ padding: 0 }}>
+                <div>
+                  <label style={{ fontSize: '13px', fontWeight: 500 }}>Trade Once Per Session</label>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Stop after 1 trade</div>
+                </div>
+                <div className="toggle-switch">
+                  <input type="checkbox" checked={ownerSettings.trade_once_per_session}
+                    onChange={e => setOwnerSettings(s => ({ ...s, trade_once_per_session: e.target.checked }))} />
+                  <span className="toggle-slider"
+                    onClick={() => setOwnerSettings(s => ({ ...s, trade_once_per_session: !s.trade_once_per_session }))} />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {ownerMsg && (
+            <div className={`validation-result ${ownerMsg.success ? 'success' : 'error'}`} style={{ marginTop: 8 }}>
+              {ownerMsg.success ? '✅' : '❌'} {ownerMsg.msg}
+            </div>
+          )}
+
+          <button className="btn btn-primary"
+            onClick={handleOwnerSave}
+            disabled={ownerSaving}
+            style={{ marginTop: 12, width: '100%', justifyContent: 'center', background: 'var(--accent-bull)' }}
+          >
+            {ownerSaving ? 'Saving...' : '💾 Save Personal Trading Rules'}
+          </button>
         </div>
       </div>
     </div>

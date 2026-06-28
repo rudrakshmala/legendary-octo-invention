@@ -9,6 +9,7 @@ venv/
 # Secrets — NEVER commit these
 config_local.py
 smart_brain.pkl
+owner_settings.json
 
 # Logs
 *.log

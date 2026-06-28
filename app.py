@@ -163,6 +163,14 @@ class BacktestPayload(BaseModel):
     symbol_a: str
     symbol_b: str
 
+class OwnerSettingsPayload(BaseModel):
+    starting_capital_usd: float = 100.0
+    daily_profit_target_pct: float = 5.0
+    hard_stop_loss_pct: float = 2.0
+    max_position_pct: float = 80.0
+    trade_once_per_session: bool = True
+    max_hold_hours: float = 6.0
+
 
 # ── App lifecycle ──
 @asynccontextmanager
@@ -287,6 +295,45 @@ def update_blacklist(payload: FreezePayload):
     with open("blacklist.json", "w") as f:
         json.dump(data, f, indent=4)
     return data
+
+# ═══════════════════════════════════════════
+# 1.7. OWNER (PERSONAL) TRADING RULES
+# ═══════════════════════════════════════════
+
+OWNER_SETTINGS_FILE = "owner_settings.json"
+OWNER_SETTINGS_DEFAULTS = {
+    "starting_capital_usd": 100.0,
+    "daily_profit_target_pct": 5.0,
+    "hard_stop_loss_pct": 2.0,
+    "max_position_pct": 80.0,
+    "trade_once_per_session": True,
+    "max_hold_hours": 6.0
+}
+
+@app.get("/api/owner/settings")
+def get_owner_settings():
+    """Return the owner's personal trading rules (profit target, stop loss, capital)."""
+    if os.path.exists(OWNER_SETTINGS_FILE):
+        try:
+            with open(OWNER_SETTINGS_FILE, "r") as f:
+                saved = json.load(f)
+                return {**OWNER_SETTINGS_DEFAULTS, **saved}
+        except Exception:
+            pass
+    return OWNER_SETTINGS_DEFAULTS
+
+@app.post("/api/owner/settings")
+def save_owner_settings(payload: OwnerSettingsPayload):
+    """Save the owner's personal trading rules to disk."""
+    data = payload.dict()
+    with open(OWNER_SETTINGS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+    add_log(
+        f"⚙️ Owner rules updated: Target={payload.daily_profit_target_pct}% "
+        f"Stop={payload.hard_stop_loss_pct}% Capital=${payload.starting_capital_usd:.2f}",
+        "success"
+    )
+    return {"msg": "Owner settings saved", **data}
 
 # ═══════════════════════════════════════════
 # 2. ACCOUNT & PORTFOLIO
