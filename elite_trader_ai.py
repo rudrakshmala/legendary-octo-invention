@@ -14,7 +14,7 @@ import config
 # 🚨 IMPORT AI TEAM
 from crew_trader import evaluate_opportunity
 
-JOURNAL_FILE = "trade_journal.txt"
+JOURNAL_FILE    = "trade_journal.txt"
 OWNER_SETTINGS_FILE = "owner_settings.json"
 
 PAIRS_UNIVERSE = [
@@ -23,19 +23,28 @@ PAIRS_UNIVERSE = [
     ("LMT", "RTX"), ("GOOGL", "META")
 ]
 
-print("--- 🧠 ELITE TRADER: CAPITAL-AWARE EDITION ---")
-
 # ── Dynamic paper/live mode from env ──
 is_paper = os.environ.get("ALPACA_PAPER", "true").lower() == "true"
-client = TradingClient(config.API_KEY, config.SECRET_KEY, paper=is_paper)
-print(f"   📡 Mode: {'📄 PAPER' if is_paper else '💵 LIVE TRADING'}")
+client   = TradingClient(config.API_KEY, config.SECRET_KEY, paper=is_paper)
+
+print("--- 🧠 ELITE TRADER: MULTIMODAL CREW AI EDITION ---")
+print(f"   📡 Mode: {'📄 PAPER TRADING (original behaviour)' if is_paper else '💵 LIVE TRADING (capital-aware mode)'}")
 
 
 # ─────────────────────────────────────────────────
-# OWNER SETTINGS LOADER
+# PAPER MODE: original fixed settings from config
+# ─────────────────────────────────────────────────
+DAILY_PROFIT_GOAL = config.DAILY_PROFIT_TARGET   # $1000 default
+DAILY_STOP_LOSS   = config.DAILY_STOP_LOSS        # -$100 default
+BASE_TARGET       = 150.0
+TRAILING_STEP     = 50.0
+
+
+# ─────────────────────────────────────────────────
+# LIVE MODE: load personal trading rules
 # ─────────────────────────────────────────────────
 def load_owner_settings() -> dict:
-    """Load personal trading rules from owner_settings.json."""
+    """Load personal trading rules from owner_settings.json (live mode only)."""
     defaults = {
         "starting_capital_usd": 100.0,
         "daily_profit_target_pct": 5.0,
@@ -55,27 +64,19 @@ def load_owner_settings() -> dict:
 
 
 # ─────────────────────────────────────────────────
-# DYNAMIC Z-SCORE THRESHOLD (based on profit target)
+# DYNAMIC Z-SCORE THRESHOLD (live mode)
 # ─────────────────────────────────────────────────
 def get_min_z_threshold(profit_target_pct: float) -> float:
-    """
-    Higher profit targets require larger spread divergence.
-    Returns the minimum absolute Z-score required to enter a trade.
-    """
-    if profit_target_pct < 5:
-        return 1.5
-    elif profit_target_pct < 15:
-        return 1.8
-    elif profit_target_pct < 30:
-        return 2.0
-    elif profit_target_pct < 50:
-        return 2.3
-    else:
-        return 2.5
+    """Higher profit targets require larger spread divergence."""
+    if profit_target_pct < 5:    return 1.5
+    elif profit_target_pct < 15: return 1.8
+    elif profit_target_pct < 30: return 2.0
+    elif profit_target_pct < 50: return 2.3
+    else:                        return 2.5
 
 
 # ─────────────────────────────────────────────────
-# Z-SCORE ENGINE
+# Z-SCORE ENGINE (shared by both modes)
 # ─────────────────────────────────────────────────
 def calculate_z_score(sym_a, sym_b, window=20):
     try:
@@ -86,17 +87,15 @@ def calculate_z_score(sym_a, sym_b, window=20):
         if len(df) < window:
             return None, "HOLD"
 
-        df['ratio'] = df[sym_a] / df[sym_b]
-        mean = df['ratio'].rolling(window=window).mean()
-        std  = df['ratio'].rolling(window=window).std()
+        df['ratio']   = df[sym_a] / df[sym_b]
+        mean          = df['ratio'].rolling(window=window).mean()
+        std           = df['ratio'].rolling(window=window).std()
         df['z_score'] = (df['ratio'] - mean) / std
 
         last_z = float(df['z_score'].iloc[-1])
         signal = "HOLD"
-        if last_z < -1.5:
-            signal = "BUY_PAIR"
-        elif last_z > 1.5:
-            signal = "SELL_PAIR"
+        if last_z < -1.5:  signal = "BUY_PAIR"
+        elif last_z > 1.5: signal = "SELL_PAIR"
 
         return last_z, signal
     except:
@@ -104,47 +103,61 @@ def calculate_z_score(sym_a, sym_b, window=20):
 
 
 # ─────────────────────────────────────────────────
-# AI JSON PARSER
+# AI JSON PARSER (shared by both modes)
 # ─────────────────────────────────────────────────
 def parse_ai_decision(crew_output):
     """Safely extracts JSON from CrewAI output."""
     try:
-        clean_text = re.sub(r"```json\s*", "", str(crew_output))
-        clean_text = re.sub(r"```\s*", "", clean_text)
-        data = json.loads(clean_text)
+        clean_text  = re.sub(r"```json\s*", "", str(crew_output))
+        clean_text  = re.sub(r"```\s*", "", clean_text)
+        data        = json.loads(clean_text)
         final_action = data.get("final_action", "WAIT").upper()
         should_trade = final_action in ("BUY", "SELL")
-        signal = "BUY_PAIR" if final_action == "BUY" else "SELL_PAIR" if final_action == "SELL" else None
+        signal       = "BUY_PAIR" if final_action == "BUY" else "SELL_PAIR" if final_action == "SELL" else None
         return data, should_trade, signal
     except Exception as e:
         print(f"      ⚠️ Failed to parse AI JSON: {e}")
         return {"final_action": "WAIT"}, False, None
 
 
-# ─────────────────────────────────────────────────
-# ELITE BOT
-# ─────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════
+#  ELITE BOT — unified class, mode-aware behaviour
+# ═══════════════════════════════════════════════════
 class EliteBot:
+
     def __init__(self):
-        self.settings          = load_owner_settings()
-        self.capital           = self.settings["starting_capital_usd"]
-        self.profit_target     = round(self.capital * self.settings["daily_profit_target_pct"] / 100, 4)
-        self.hard_stop         = round(self.capital * self.settings["hard_stop_loss_pct"] / 100 * -1, 4)
-        self.min_z             = get_min_z_threshold(self.settings["daily_profit_target_pct"])
-        self.max_position_pct  = self.settings["max_position_pct"] / 100
-        self.once_per_session  = self.settings["trade_once_per_session"]
-        self.max_hold_secs     = self.settings["max_hold_hours"] * 3600
-
-        self.live_pnl    = 0.0
+        self.live_pnl     = 0.0
         self.daily_profit = self.load_daily_profit()
-        self.cooldowns   = {}
+        self.cooldowns    = {}
 
-        print(f"\n   💰 Capital      : ${self.capital:.2f}")
-        print(f"   🎯 Profit Target: +${self.profit_target:.4f}  ({self.settings['daily_profit_target_pct']}%)")
-        print(f"   🛑 Hard Stop    : ${self.hard_stop:.4f}  ({self.settings['hard_stop_loss_pct']}%)")
-        print(f"   📐 Min Z-Score  : |Z| ≥ {self.min_z}")
-        print(f"   ⏱️  Max Hold Time: {self.settings['max_hold_hours']}h")
-        print(f"   🔂 Once-per-session: {self.once_per_session}")
+        if is_paper:
+            # ── PAPER MODE: original fixed settings ──
+            self.profit_target  = DAILY_PROFIT_GOAL   # e.g. $1000
+            self.hard_stop      = DAILY_STOP_LOSS      # e.g. -$100
+            self.min_z          = 1.5
+            self.once_per_session = False
+            self.max_hold_secs  = None                 # no time limit in paper mode
+            self.max_position_pct = None               # uses kelly from quant brain
+            self.settings       = {}
+            print(f"   📄 Paper Mode | Target: ${self.profit_target:.2f} | Stop: ${self.hard_stop:.2f}")
+
+        else:
+            # ── LIVE MODE: personal capital-aware settings ──
+            self.settings       = load_owner_settings()
+            capital             = self.settings["starting_capital_usd"]
+            self.profit_target  = round(capital * self.settings["daily_profit_target_pct"] / 100, 4)
+            self.hard_stop      = round(capital * self.settings["hard_stop_loss_pct"] / 100 * -1, 4)
+            self.min_z          = get_min_z_threshold(self.settings["daily_profit_target_pct"])
+            self.once_per_session = self.settings["trade_once_per_session"]
+            self.max_hold_secs  = self.settings["max_hold_hours"] * 3600
+            self.max_position_pct = self.settings["max_position_pct"] / 100
+            print(f"\n   💰 Capital      : ${capital:.2f}")
+            print(f"   🎯 Profit Target: +${self.profit_target:.4f}  ({self.settings['daily_profit_target_pct']}%)")
+            print(f"   🛑 Hard Stop    : ${self.hard_stop:.4f}  ({self.settings['hard_stop_loss_pct']}%)")
+            print(f"   📐 Min Z-Score  : |Z| ≥ {self.min_z}")
+            print(f"   ⏱️  Max Hold Time: {self.settings['max_hold_hours']}h")
+            print(f"   🔂 Once-per-session: {self.once_per_session}")
+
         print(f"   📅 Session Profit so far: ${self.daily_profit:.4f}\n")
 
     # ── Journal ──
@@ -166,17 +179,13 @@ class EliteBot:
             f.write(f"{datetime.date.today()}|{self.daily_profit}")
 
     # ── Account helpers ──
-    def get_account_equity(self):
-        try:
-            return float(client.get_account().equity)
-        except:
-            return self.capital   # fallback to configured capital
-
     def get_buying_power(self):
-        try:
-            return float(client.get_account().buying_power)
-        except:
-            return 0.0
+        try: return float(client.get_account().buying_power)
+        except: return 0.0
+
+    def get_account_equity(self):
+        try: return float(client.get_account().equity)
+        except: return self.settings.get("starting_capital_usd", 100.0)
 
     def get_price(self, sym):
         try:
@@ -187,43 +196,75 @@ class EliteBot:
             print(f"      ⚠️ Price fetch failed for {sym}: {e}")
         return 0.0
 
+    def calculate_qty(self, sym, budget):
+        """PAPER MODE: whole-share sizing."""
+        price = self.get_price(sym)
+        if price <= 0: return 0
+        return math.floor((budget * 0.95) / price)
+
     def close_all(self):
-        try:
-            client.close_all_positions(cancel_orders=True)
-        except:
-            pass
+        try: client.close_all_positions(cancel_orders=True)
+        except: pass
 
     def is_active_trade(self, sym_a, sym_b):
         try:
             positions = client.get_all_positions()
             for p in positions:
-                if p.symbol in [sym_a, sym_b]:
-                    return True
-        except:
-            pass
+                if p.symbol in [sym_a, sym_b]: return True
+        except: pass
         return False
 
     # ─────────────────────────────────────────
-    # CAPITAL-AWARE TRADE LOOP
+    # PAPER MODE: original trailing stop loop
     # ─────────────────────────────────────────
-    def trailing_stop_loop(self) -> str:
-        """
-        Monitor open position. Exit on:
-          - Profit target hit  → return "TARGET_HIT"
-          - Hard stop hit      → return "STOP_HIT"
-          - Max hold time      → return "TIME_EXIT"
-          - Position gone      → return "CLOSED"
-        """
+    def _paper_trailing_stop_loop(self):
+        max_profit = 0.0
+        stop_price = DAILY_STOP_LOSS
+        print(f"   🚀 RUNNING TRADE (Stop: ${stop_price:.2f})")
+
+        while True:
+            try:
+                positions = client.get_all_positions()
+                if not positions: return "CLOSED"
+
+                curr_pnl = sum([float(p.unrealized_pl) for p in positions])
+                self.live_pnl = curr_pnl
+
+                if curr_pnl > max_profit:
+                    max_profit = curr_pnl
+                    if max_profit >= BASE_TARGET:
+                        new_stop = max_profit - TRAILING_STEP
+                        if new_stop > stop_price:
+                            stop_price = new_stop
+                            print(f"\n      🔥 Trailing Stop Raised: ${stop_price:.2f}")
+
+                print(f"\r      💎 PnL: ${curr_pnl:.2f} (Stop: ${stop_price:.2f})   ", end="")
+
+                if curr_pnl <= stop_price:
+                    self.close_all()
+                    self.daily_profit += curr_pnl
+                    self.save_daily_profit()
+                    print(f"\n   💰 CLOSED POSITION: ${curr_pnl:.2f}")
+                    self.live_pnl = 0.0
+                    return "CLOSED"
+
+                time.sleep(2)
+            except: time.sleep(5)
+
+    # ─────────────────────────────────────────
+    # LIVE MODE: capital-aware exit loop
+    # ─────────────────────────────────────────
+    def _live_trailing_stop_loop(self) -> str:
+        """Exit on: profit target, hard stop, or max hold time."""
         trade_start = time.time()
         print(f"   🚀 TRADE RUNNING | Target: +${self.profit_target:.4f} | Stop: ${self.hard_stop:.4f}")
 
         while True:
             try:
                 positions = client.get_all_positions()
-                if not positions:
-                    return "CLOSED"
+                if not positions: return "CLOSED"
 
-                curr_pnl = sum(float(p.unrealized_pl) for p in positions)
+                curr_pnl  = sum(float(p.unrealized_pl) for p in positions)
                 self.live_pnl = curr_pnl
                 elapsed_h = (time.time() - trade_start) / 3600
 
@@ -231,41 +272,48 @@ class EliteBot:
                     f"\r      💎 PnL: ${curr_pnl:+.4f} | "
                     f"Target: +${self.profit_target:.4f} | "
                     f"Stop: ${self.hard_stop:.4f} | "
-                    f"Elapsed: {elapsed_h:.1f}h   ",
-                    end=""
+                    f"Elapsed: {elapsed_h:.1f}h   ", end=""
                 )
 
-                # ── TAKE PROFIT ──
+                # Take-profit
                 if curr_pnl >= self.profit_target:
                     self.close_all()
                     self.daily_profit += curr_pnl
                     self.save_daily_profit()
-                    print(f"\n\n   🏆 PROFIT TARGET HIT! +${curr_pnl:.4f} | Session Total: ${self.daily_profit:.4f}")
+                    print(f"\n\n   🏆 PROFIT TARGET HIT! +${curr_pnl:.4f} | Session: ${self.daily_profit:.4f}")
                     self.live_pnl = 0.0
                     return "TARGET_HIT"
 
-                # ── HARD STOP ──
+                # Hard stop
                 if curr_pnl <= self.hard_stop:
                     self.close_all()
                     self.daily_profit += curr_pnl
                     self.save_daily_profit()
-                    print(f"\n\n   🛑 HARD STOP HIT! ${curr_pnl:.4f} | Session Total: ${self.daily_profit:.4f}")
+                    print(f"\n\n   🛑 HARD STOP HIT! ${curr_pnl:.4f} | Session: ${self.daily_profit:.4f}")
                     self.live_pnl = 0.0
                     return "STOP_HIT"
 
-                # ── MAX HOLD TIME ──
-                if (time.time() - trade_start) > self.max_hold_secs:
+                # Max hold time
+                if self.max_hold_secs and (time.time() - trade_start) > self.max_hold_secs:
                     self.close_all()
                     self.daily_profit += curr_pnl
                     self.save_daily_profit()
-                    print(f"\n\n   ⏰ MAX HOLD TIME ({self.settings['max_hold_hours']}h) REACHED. PnL: ${curr_pnl:.4f}")
+                    print(f"\n\n   ⏰ MAX HOLD TIME REACHED. PnL: ${curr_pnl:.4f}")
                     self.live_pnl = 0.0
                     return "TIME_EXIT"
 
                 time.sleep(3)
-
             except Exception:
                 time.sleep(5)
+
+    # ─────────────────────────────────────────
+    # UNIFIED DISPATCHER
+    # ─────────────────────────────────────────
+    def trailing_stop_loop(self):
+        if is_paper:
+            return self._paper_trailing_stop_loop()
+        else:
+            return self._live_trailing_stop_loop()
 
     # ─────────────────────────────────────────
     # MAIN RUN LOOP
@@ -277,13 +325,13 @@ class EliteBot:
         while True:
             # ── Daily guards ──
             if self.daily_profit >= self.profit_target:
-                print(f"\n🏆 SESSION GOAL ALREADY HIT (${self.daily_profit:.4f}). Shutting down.")
+                print(f"\n🏆 {'DAILY' if is_paper else 'SESSION'} GOAL HIT (${self.daily_profit:.4f}). Shutting down.")
                 break
             if self.daily_profit <= self.hard_stop:
-                print(f"\n🛑 SESSION STOP ALREADY HIT (${self.daily_profit:.4f}). Shutting down.")
+                print(f"\n🛑 {'DAILY' if is_paper else 'SESSION'} STOP HIT (${self.daily_profit:.4f}). Shutting down.")
                 break
 
-            print(f"\n[{time.strftime('%H:%M:%S')}] 🔭 SCANNING MARKET... (Min Z ≥ {self.min_z})")
+            print(f"\n[{time.strftime('%H:%M:%S')}] 🔭 SCANNING MARKET... (Min |Z| ≥ {self.min_z})")
             best_opp = None
             best_z   = 0.0
 
@@ -295,8 +343,7 @@ class EliteBot:
                             frozen = json.load(f).get("frozen_tickers", [])
                             if sym_a in frozen or sym_b in frozen:
                                 continue
-                except:
-                    pass
+                except: pass
 
                 pair_key = f"{sym_a}/{sym_b}"
 
@@ -306,10 +353,8 @@ class EliteBot:
                         continue
 
                 z, signal = calculate_z_score(sym_a, sym_b)
-                if z is None:
-                    continue
+                if z is None: continue
 
-                # ── Target-driven Z filter ──
                 if abs(z) >= self.min_z and abs(z) > abs(best_z):
                     best_z, best_opp = z, (sym_a, sym_b, signal)
 
@@ -318,17 +363,17 @@ class EliteBot:
                 pair_key = f"{sym_a}/{sym_b}"
 
                 if self.is_active_trade(sym_a, sym_b):
-                    print(f"   ⚠️ Already in {sym_a}/{sym_b}. Waiting...")
+                    print(f"   ⚠️ Skipping {sym_a}/{sym_b} — already in position.")
                     time.sleep(10)
                     continue
 
-                print(f"\n   🚨 SIGNAL: {sym_a}/{sym_b}  Z={best_z:.2f} (threshold {self.min_z})")
+                print(f"\n   🚨 SIGNAL: {sym_a}/{sym_b}  Z={best_z:.2f}")
                 print("   📞 Calling CrewAI team for validation...")
 
                 try:
                     # ── Quant Brain ──
-                    qs_context  = ""
-                    kelly_fraction = self.max_position_pct  # default to owner's max
+                    qs_context     = ""
+                    kelly_fraction = 0.10   # safe fallback
 
                     try:
                         from quant.quant_brain import get_quant_signal
@@ -356,11 +401,10 @@ class EliteBot:
                                     "reason": qs.reason,
                                     "updated_at": time.strftime("%H:%M:%S")
                                 }, jf)
-                        except:
-                            pass
+                        except: pass
 
                         if not qs.approved:
-                            print(f"   🛑 Quant Brain rejected: {qs.reason}")
+                            print(f"   🛑 Quant Brain rejected: {qs.reason}. Cooldown 1h.")
                             self.cooldowns[pair_key] = time.time()
                             time.sleep(15)
                             continue
@@ -373,11 +417,10 @@ class EliteBot:
                             f"Micro News Sentiment Score: {qs.sentiment_score:.2f}\n"
                             f"CNN Macro Fear & Greed Index: {qs.fear_greed}/100"
                         )
-                        # Use the SMALLER of Kelly and owner's max position size
-                        kelly_fraction = min(qs.kelly_fraction, self.max_position_pct)
+                        kelly_fraction = qs.kelly_fraction
 
                     except Exception as q_err:
-                        print(f"      ⚠️ Quant Brain failed (using owner max-position fallback): {q_err}")
+                        print(f"      ⚠️ Quant Brain failed (safe fallback): {q_err}")
 
                     # ── CrewAI Validation ──
                     crew_output = evaluate_opportunity(sym_a, sym_b, best_z, qs_context)
@@ -387,53 +430,70 @@ class EliteBot:
                     print(json.dumps(data, indent=2))
 
                     if not should_trade:
-                        print(f"   🛑 AI rejected trade (action: {data.get('final_action', 'WAIT')}). Cooldown 1h.")
+                        print(f"   🛑 AI rejected (action: {data.get('final_action', 'WAIT')}). Cooldown 1h.")
                         self.cooldowns[pair_key] = time.time()
                         time.sleep(15)
                         continue
 
-                    # ── CAPITAL-AWARE POSITION SIZING ──
-                    equity = self.get_account_equity()
-                    budget = round(equity * kelly_fraction, 2)  # e.g. $12 * 0.8 = $9.60
+                    # ── EXECUTION — mode-aware ──
+                    if is_paper:
+                        # PAPER: original whole-share sizing
+                        cash = self.get_buying_power()
+                        if cash < 100:
+                            print(f"   ⚠️ Not enough buying power (${cash:.2f}). Skipping.")
+                            continue
 
-                    if budget < 1.0:
-                        print(f"   ⚠️ Budget ${budget:.2f} is below Alpaca's $1 minimum. Skipping.")
-                        continue
+                        budget  = cash * kelly_fraction
+                        qty_a   = self.calculate_qty(sym_a, budget)
+                        qty_b   = self.calculate_qty(sym_b, budget)
 
-                    print(f"\n   💰 Equity: ${equity:.2f} | Budget per leg: ${budget:.2f} ({kelly_fraction:.0%})")
-                    print(f"   ⚡ EXECUTING: {signal} | {sym_a} vs {sym_b} | ${budget:.2f} notional each")
+                        if qty_a > 0 and qty_b > 0 and signal:
+                            print(f"   ⚡ PAPER EXECUTE: {signal} | {qty_a}×{sym_a} / {qty_b}×{sym_b} [Kelly {kelly_fraction:.1%}]")
+                            side_a = OrderSide.BUY  if signal == "BUY_PAIR" else OrderSide.SELL
+                            side_b = OrderSide.SELL if signal == "BUY_PAIR" else OrderSide.BUY
 
-                    side_a = OrderSide.BUY  if signal == "BUY_PAIR" else OrderSide.SELL
-                    side_b = OrderSide.SELL if signal == "BUY_PAIR" else OrderSide.BUY
+                            client.submit_order(MarketOrderRequest(symbol=sym_a, qty=qty_a, side=side_a, time_in_force=TimeInForce.GTC))
+                            client.submit_order(MarketOrderRequest(symbol=sym_b, qty=qty_b, side=side_b, time_in_force=TimeInForce.GTC))
+                        else:
+                            print(f"   ⚠️ Qty = 0 — budget ${budget:.2f} | {sym_a}: ${self.get_price(sym_a):.2f} | {sym_b}: ${self.get_price(sym_b):.2f}")
+                            continue
 
-                    # ── Fractional / Notional orders ──
-                    client.submit_order(MarketOrderRequest(
-                        symbol=sym_a, notional=budget, side=side_a,
-                        time_in_force=TimeInForce.DAY
-                    ))
-                    client.submit_order(MarketOrderRequest(
-                        symbol=sym_b, notional=budget, side=side_b,
-                        time_in_force=TimeInForce.DAY
-                    ))
+                    else:
+                        # LIVE: fractional notional sizing
+                        equity = self.get_account_equity()
+                        budget = round(equity * self.max_position_pct, 2)
+
+                        if budget < 1.0:
+                            print(f"   ⚠️ Budget ${budget:.2f} below Alpaca $1 minimum. Skipping.")
+                            continue
+
+                        print(f"   💰 Equity: ${equity:.2f} | Budget per leg: ${budget:.2f}")
+                        print(f"   ⚡ LIVE EXECUTE: {signal} | ${budget:.2f} notional ×{sym_a} / ${budget:.2f} notional ×{sym_b}")
+
+                        side_a = OrderSide.BUY  if signal == "BUY_PAIR" else OrderSide.SELL
+                        side_b = OrderSide.SELL if signal == "BUY_PAIR" else OrderSide.BUY
+
+                        client.submit_order(MarketOrderRequest(symbol=sym_a, notional=budget, side=side_a, time_in_force=TimeInForce.DAY))
+                        client.submit_order(MarketOrderRequest(symbol=sym_b, notional=budget, side=side_b, time_in_force=TimeInForce.DAY))
 
                     time.sleep(5)
 
-                    # ── Monitor trade until exit condition ──
+                    # ── Monitor trade ──
                     result = self.trailing_stop_loop()
                     print(f"\n   📊 Trade result: {result}")
 
-                    # ── Once-per-session mode ──
-                    if self.once_per_session:
-                        print("\n✅ Session complete (once-per-session mode). Restart bot to trade again.")
+                    # ── Once-per-session (live only) ──
+                    if not is_paper and self.once_per_session:
+                        print("\n✅ Session complete (once-per-session). Restart bot to trade again.")
                         return
 
                 except Exception as e:
-                    print(f"   ❌ Error during execution: {e}")
-                    print("   ⏳ Sleeping 60s before retrying...")
+                    print(f"   ❌ Error: {e}")
+                    print("   ⏳ Sleeping 60s...")
                     time.sleep(60)
 
             else:
-                print(f"   💤 No pairs with |Z| ≥ {self.min_z} found. Retrying in 60s...")
+                print(f"   💤 No pairs with |Z| ≥ {self.min_z}. Retrying in 60s...")
                 time.sleep(60)
 
 
