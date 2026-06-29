@@ -3,8 +3,11 @@ import { KeyRound, Shield, Sliders, Info, Zap, Target } from 'lucide-react';
 import api from '../api/client';
 
 export default function SettingsPage() {
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('alpaca_api_key') || '');
-  const [secretKey, setSecretKey] = useState(() => localStorage.getItem('alpaca_secret_key') || '');
+  const [paperApiKey, setPaperApiKey] = useState(() => localStorage.getItem('alpaca_paper_api_key') || '');
+  const [paperSecretKey, setPaperSecretKey] = useState(() => localStorage.getItem('alpaca_paper_secret_key') || '');
+  const [liveApiKey, setLiveApiKey] = useState(() => localStorage.getItem('alpaca_live_api_key') || '');
+  const [liveSecretKey, setLiveSecretKey] = useState(() => localStorage.getItem('alpaca_live_secret_key') || '');
+  
   const [paper, setPaper] = useState(() => {
     const val = localStorage.getItem('alpaca_paper');
     return val === null ? true : val === 'true';
@@ -39,17 +42,27 @@ export default function SettingsPage() {
     setSaving(true);
     setValidation(null);
     try {
-      await api.setConfig({ api_key: apiKey, secret_key: secretKey, paper, groq_key: groqKey });
+      await api.setConfig({ 
+        paper_api_key: paperApiKey, 
+        paper_secret_key: paperSecretKey, 
+        live_api_key: liveApiKey, 
+        live_secret_key: liveSecretKey, 
+        paper, 
+        groq_key: groqKey 
+      });
+      // Try to validate based on whichever mode is currently active
       const res = await api.validateConfig();
       if (res.valid) {
-        localStorage.setItem('alpaca_api_key', apiKey);
-        localStorage.setItem('alpaca_secret_key', secretKey);
+        localStorage.setItem('alpaca_paper_api_key', paperApiKey);
+        localStorage.setItem('alpaca_paper_secret_key', paperSecretKey);
+        localStorage.setItem('alpaca_live_api_key', liveApiKey);
+        localStorage.setItem('alpaca_live_secret_key', liveSecretKey);
         localStorage.setItem('alpaca_paper', String(paper));
         localStorage.setItem('groq_api_key', groqKey);
         setValidation({ success: true, msg: `Connected! Portfolio: $${res.portfolio_value?.toLocaleString()}` });
         api.getConfig().then(setConfig);
       } else {
-        setValidation({ success: false, msg: res.error || 'Invalid keys' });
+        setValidation({ success: false, msg: res.error || 'Invalid keys for the active mode' });
       }
     } catch (err) {
       setValidation({ success: false, msg: err.message });
@@ -107,30 +120,53 @@ export default function SettingsPage() {
             background: 'var(--accent-blue-dim)', fontSize: '12px', color: 'var(--accent-blue)',
             display: 'flex', alignItems: 'center', gap: '8px'
           }}>
-            <Info size={14} />
-            Keys are saved in your browser's local storage and synced to the backend service.
+            <Info size={14} style={{ flexShrink: 0 }} />
+            Keys are stored securely in your browser's local storage. Live keys are ONLY kept in memory while the bot runs and never saved to the server's disk.
+          </div>
+          
+          <div className="toggle-row" style={{ background: paper ? 'rgba(38,166,154,0.05)' : 'rgba(239,83,80,0.05)', padding: '12px', borderRadius: '8px', border: `1px solid ${paper ? 'var(--accent-bull)' : 'var(--accent-bear)'}`, marginBottom: '20px' }}>
+            <div>
+              <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>Paper Trading Mode</label>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Turn OFF to trade with real money and Live keys</div>
+            </div>
+            <div className="toggle-switch">
+              <input type="checkbox" checked={paper} onChange={(e) => setPaper(e.target.checked)} />
+              <span className="toggle-slider" onClick={() => setPaper(!paper)} />
+            </div>
           </div>
 
-          <div className="form-group">
-            <label>Alpaca API Key ID</label>
-            <input
-              type="text"
-              placeholder="PK..."
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              autoComplete="off"
-            />
-          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+            {/* PAPER KEYS */}
+            <div style={{ padding: '12px', border: '1px solid var(--border-color)', borderRadius: '8px', opacity: paper ? 1 : 0.6 }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                📄 Paper Credentials
+                {paper && <span style={{ fontSize: '10px', background: 'var(--accent-bull)', color: '#000', padding: '2px 6px', borderRadius: '4px' }}>ACTIVE</span>}
+              </div>
+              <div className="form-group" style={{ marginBottom: '12px' }}>
+                <label style={{ fontSize: '11px' }}>Paper API Key</label>
+                <input type="text" placeholder="PK..." value={paperApiKey} onChange={(e) => setPaperApiKey(e.target.value)} autoComplete="off" />
+              </div>
+              <div className="form-group">
+                <label style={{ fontSize: '11px' }}>Paper Secret Key</label>
+                <input type="password" placeholder="..." value={paperSecretKey} onChange={(e) => setPaperSecretKey(e.target.value)} autoComplete="off" />
+              </div>
+            </div>
 
-          <div className="form-group">
-            <label>Alpaca Secret Key</label>
-            <input
-              type="password"
-              placeholder="Your secret key..."
-              value={secretKey}
-              onChange={(e) => setSecretKey(e.target.value)}
-              autoComplete="off"
-            />
+            {/* LIVE KEYS */}
+            <div style={{ padding: '12px', border: '1px solid var(--border-color)', borderRadius: '8px', opacity: !paper ? 1 : 0.6 }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                💵 Live Credentials
+                {!paper && <span style={{ fontSize: '10px', background: 'var(--accent-bear)', color: '#fff', padding: '2px 6px', borderRadius: '4px' }}>ACTIVE</span>}
+              </div>
+              <div className="form-group" style={{ marginBottom: '12px' }}>
+                <label style={{ fontSize: '11px' }}>Live API Key</label>
+                <input type="text" placeholder="AK..." value={liveApiKey} onChange={(e) => setLiveApiKey(e.target.value)} autoComplete="off" />
+              </div>
+              <div className="form-group">
+                <label style={{ fontSize: '11px' }}>Live Secret Key</label>
+                <input type="password" placeholder="..." value={liveSecretKey} onChange={(e) => setLiveSecretKey(e.target.value)} autoComplete="off" />
+              </div>
+            </div>
           </div>
 
           <div className="form-group">
@@ -144,20 +180,9 @@ export default function SettingsPage() {
             />
           </div>
 
-          <div className="toggle-row">
-            <div>
-              <label style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>Paper Trading Mode</label>
-              <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Use fake money for testing</div>
-            </div>
-            <div className="toggle-switch">
-              <input type="checkbox" checked={paper} onChange={(e) => setPaper(e.target.checked)} />
-              <span className="toggle-slider" onClick={() => setPaper(!paper)} />
-            </div>
-          </div>
-
           {!paper && (
-            <div className="validation-result error" style={{ margin: '8px 0' }}>
-              ⚠️ LIVE MODE — You will be trading with real money!
+            <div className="validation-result error" style={{ margin: '8px 0', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              ⚠️ LIVE MODE ACTIVE — You will be trading with REAL MONEY!
             </div>
           )}
 
@@ -170,10 +195,10 @@ export default function SettingsPage() {
           <button
             className="btn btn-primary"
             onClick={handleSave}
-            disabled={!apiKey || !secretKey || saving}
+            disabled={saving}
             style={{ marginTop: '12px', width: '100%', justifyContent: 'center' }}
           >
-            {saving ? 'Validating...' : 'Save & Validate Keys'}
+            {saving ? 'Validating Active Keys...' : 'Save & Validate Keys'}
           </button>
         </div>
       </div>

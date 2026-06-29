@@ -150,8 +150,10 @@ def get_crypto_data_client():
 
 # ── Pydantic models ──
 class ApiKeyPayload(BaseModel):
-    api_key: str
-    secret_key: str
+    paper_api_key: str = ""
+    paper_secret_key: str = ""
+    live_api_key: str = ""
+    live_secret_key: str = ""
     paper: bool = True
     groq_key: str = ""
 
@@ -202,12 +204,22 @@ def health_debug():
 @app.get("/api/config")
 def get_config():
     """Return masked keys + paper mode status."""
-    key = os.environ.get("ALPACA_API_KEY", runtime_config["api_key"])
-    masked = key[:4] + "****" + key[-4:] if len(key) > 8 else "Not Set"
+    def mask_key(k):
+        return k[:4] + "****" + k[-4:] if k and len(k) > 8 else "Not Set"
+
+    paper_key = os.environ.get("PAPER_API_KEY", "")
+    live_key = os.environ.get("LIVE_API_KEY", "")
     
+    # Fallback to initial ALPACA_API_KEY if we don't have separated keys yet
+    if not paper_key and not live_key:
+        curr_key = os.environ.get("ALPACA_API_KEY", runtime_config["api_key"])
+        is_paper = os.environ.get("ALPACA_PAPER", "true").lower() == "true"
+        if is_paper:
+            paper_key = curr_key
+        else:
+            live_key = curr_key
+            
     groq = os.environ.get("GROQ_API_KEY", "")
-    groq_masked = groq[:4] + "****" + groq[-4:] if len(groq) > 8 else "Not Set"
-    
     paper_val = os.environ.get("ALPACA_PAPER", "true").lower() == "true"
 
     # Load frozen tickers for UI display
@@ -217,26 +229,37 @@ def get_config():
             frozen = json.load(f).get("frozen_tickers", [])
 
     return {
-        "api_key_masked": masked,
-        "groq_key_masked": groq_masked,
+        "paper_api_key_masked": mask_key(paper_key),
+        "live_api_key_masked": mask_key(live_key),
+        "groq_key_masked": mask_key(groq),
         "paper": paper_val,
         "base_url": "https://paper-api.alpaca.markets/v2" if paper_val else "https://api.alpaca.markets/v2",
-        "configured": bool(key and os.environ.get("ALPACA_SECRET_KEY", runtime_config["secret_key"])),
+        "configured": bool(os.environ.get("ALPACA_API_KEY")),
         "frozen_tickers": frozen
     }
 
 @app.post("/api/config")
 def set_config(payload: ApiKeyPayload):
     """Update API keys at runtime."""
-    os.environ["ALPACA_API_KEY"] = payload.api_key.strip()
-    os.environ["ALPACA_SECRET_KEY"] = payload.secret_key.strip()
+    os.environ["PAPER_API_KEY"] = payload.paper_api_key.strip()
+    os.environ["PAPER_SECRET_KEY"] = payload.paper_secret_key.strip()
+    os.environ["LIVE_API_KEY"] = payload.live_api_key.strip()
+    os.environ["LIVE_SECRET_KEY"] = payload.live_secret_key.strip()
+    
     os.environ["ALPACA_PAPER"] = str(payload.paper).lower()
     
+    if payload.paper:
+        os.environ["ALPACA_API_KEY"] = payload.paper_api_key.strip()
+        os.environ["ALPACA_SECRET_KEY"] = payload.paper_secret_key.strip()
+    else:
+        os.environ["ALPACA_API_KEY"] = payload.live_api_key.strip()
+        os.environ["ALPACA_SECRET_KEY"] = payload.live_secret_key.strip()
+        
     if payload.groq_key.strip():
         os.environ["GROQ_API_KEY"] = payload.groq_key.strip()
     
-    runtime_config["api_key"] = payload.api_key.strip()
-    runtime_config["secret_key"] = payload.secret_key.strip()
+    runtime_config["api_key"] = os.environ["ALPACA_API_KEY"]
+    runtime_config["secret_key"] = os.environ["ALPACA_SECRET_KEY"]
     runtime_config["paper"] = payload.paper
     runtime_config["base_url"] = (
         "https://paper-api.alpaca.markets/v2" if payload.paper

@@ -12,7 +12,7 @@ from crewai.tools import tool
 GROQ_MODELS = [
     "groq/llama-3.3-70b-versatile",
     "groq/llama-3.1-8b-instant",
-    "groq/mixtral-8x7b-32768"
+    "groq/gemma2-9b-it"
 ]
 current_model_idx = 0
 
