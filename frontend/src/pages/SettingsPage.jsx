@@ -25,6 +25,10 @@ export default function SettingsPage() {
     max_position_pct: 80,
     trade_once_per_session: true,
     max_hold_hours: 6,
+    enable_goal_seeking: false,
+    target_goal_usd: 72000,
+    deadline_days: 180,
+    start_date: ''
   });
   const [ownerSaving, setOwnerSaving] = useState(false);
   const [ownerMsg, setOwnerMsg] = useState(null);
@@ -377,6 +381,74 @@ export default function SettingsPage() {
                   <span className="toggle-slider"
                     onClick={() => setOwnerSettings(s => ({ ...s, trade_once_per_session: !s.trade_once_per_session }))} />
                 </div>
+              </div>
+            </div>
+          </div>
+          
+          <hr style={{ border: 'none', borderTop: '1px solid var(--border-color)', margin: '20px 0' }} />
+          
+          {/* Goal-Seeking Urgency Engine */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--accent-bull)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Zap size={14} /> Hyper-Aggressive Goal-Seeking Engine
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: 12 }}>
+              If enabled, the bot will dynamically calculate the Required Daily Return (RDR) to hit your target by the deadline. 
+              If it falls behind schedule, it enters <strong>High-Urgency Mode</strong>: overriding conservative AI filters, bypassing CrewAI validation, maximizing position sizing, and forcing trades mathematically. 
+              <br/><br/>
+              <em>⚠️ Extreme Risk of total capital loss. Applies to both Paper and Live modes.</em>
+            </div>
+            
+            <div className="toggle-row" style={{ background: 'rgba(239,83,80,0.05)', border: '1px solid var(--accent-bear)', padding: 12, borderRadius: 8, marginBottom: 16 }}>
+              <div>
+                <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>Enable Goal-Seeking Engine</label>
+              </div>
+              <div className="toggle-switch">
+                <input type="checkbox" checked={ownerSettings.enable_goal_seeking}
+                  onChange={e => {
+                    const enabled = e.target.checked;
+                    setOwnerSettings(s => ({ 
+                      ...s, 
+                      enable_goal_seeking: enabled,
+                      start_date: enabled && !s.start_date ? new Date().toISOString().split('T')[0] : s.start_date
+                    }));
+                  }} />
+                <span className="toggle-slider"
+                  onClick={() => {
+                    const enabled = !ownerSettings.enable_goal_seeking;
+                    setOwnerSettings(s => ({ 
+                      ...s, 
+                      enable_goal_seeking: enabled,
+                      start_date: enabled && !s.start_date ? new Date().toISOString().split('T')[0] : s.start_date
+                    }));
+                  }} />
+              </div>
+            </div>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, opacity: ownerSettings.enable_goal_seeking ? 1 : 0.4, pointerEvents: ownerSettings.enable_goal_seeking ? 'auto' : 'none' }}>
+              <div className="form-group">
+                <label>Target Goal (USD)</label>
+                <input type="number" min="10" step="10"
+                  value={ownerSettings.target_goal_usd}
+                  onChange={e => setOwnerSettings(s => ({ ...s, target_goal_usd: parseFloat(e.target.value) || 0 }))}
+                />
+                <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>₹60 Lakh ≈ $72,000 USD</span>
+              </div>
+              
+              <div className="form-group">
+                <label>Deadline (Days)</label>
+                <input type="number" min="1" step="1"
+                  value={ownerSettings.deadline_days}
+                  onChange={e => setOwnerSettings(s => ({ ...s, deadline_days: parseInt(e.target.value, 10) || 1 }))}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Start Date</label>
+                <input type="date"
+                  value={ownerSettings.start_date}
+                  onChange={e => setOwnerSettings(s => ({ ...s, start_date: e.target.value }))}
+                />
               </div>
             </div>
           </div>

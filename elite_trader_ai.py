@@ -129,6 +129,9 @@ class EliteBot:
         self.live_pnl     = 0.0
         self.daily_profit = self.load_daily_profit()
         self.cooldowns    = {}
+        
+        # Load settings globally so Goal-Seeking applies everywhere
+        self.settings = load_owner_settings()
 
         if is_paper:
             # ── PAPER MODE: original fixed settings ──
@@ -138,12 +141,10 @@ class EliteBot:
             self.once_per_session = False
             self.max_hold_secs  = None                 # no time limit in paper mode
             self.max_position_pct = None               # uses kelly from quant brain
-            self.settings       = {}
             print(f"   📄 Paper Mode | Target: ${self.profit_target:.2f} | Stop: ${self.hard_stop:.2f}")
 
         else:
             # ── LIVE MODE: personal capital-aware settings ──
-            self.settings       = load_owner_settings()
             capital             = self.settings["starting_capital_usd"]
             self.profit_target  = round(capital * self.settings["daily_profit_target_pct"] / 100, 4)
             self.hard_stop      = round(capital * self.settings["hard_stop_loss_pct"] / 100 * -1, 4)
@@ -157,6 +158,10 @@ class EliteBot:
             print(f"   📐 Min Z-Score  : |Z| ≥ {self.min_z}")
             print(f"   ⏱️  Max Hold Time: {self.settings['max_hold_hours']}h")
             print(f"   🔂 Once-per-session: {self.once_per_session}")
+
+        # ── Goal-Seeking Engine State ──
+        self.bypass_crewai = False
+        self.urgency_multiplier = 1.0
 
         print(f"   📅 Session Profit so far: ${self.daily_profit:.4f}\n")
 
@@ -322,6 +327,49 @@ class EliteBot:
         print("   ⏳ Warming up market scanners...")
         time.sleep(3)
 
+        # ── Goal-Seeking Engine Check ──
+        if self.settings.get("enable_goal_seeking"):
+            target_usd = self.settings.get("target_goal_usd", 72000.0)
+            deadline_days = self.settings.get("deadline_days", 180)
+            start_date_str = self.settings.get("start_date", "")
+            
+            # Default to 1 day passed if something is wrong
+            days_passed = 1 
+            if start_date_str:
+                try:
+                    start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                    days_passed = (datetime.date.today() - start_date).days
+                    if days_passed < 1: days_passed = 1
+                except:
+                    pass
+            
+            days_remaining = deadline_days - days_passed
+            if days_remaining <= 0: days_remaining = 1
+            
+            current_capital = self.get_account_equity()
+            
+            if current_capital > 0 and current_capital < target_usd:
+                # Required Daily Return formula: (Target / Current) ^ (1 / Days) - 1
+                rdr = (target_usd / current_capital) ** (1.0 / days_remaining) - 1.0
+                print(f"\n   🚀 GOAL-SEEKING ENGINE ENGAGED")
+                print(f"      Target: ${target_usd:.2f} | Remaining Days: {days_remaining}")
+                print(f"      Required Daily Return (RDR): {rdr*100:.2f}%")
+                
+                if rdr > 0.05: # > 5% daily required
+                    print("      ⚠️ STATE: MAXIMUM AGGRESSION (Critical Deficit)")
+                    self.bypass_crewai = True
+                    self.urgency_multiplier = 2.0
+                    self.min_z = max(1.0, self.min_z - 0.5) # Take riskier trades
+                elif rdr > 0.02: # > 2% daily required
+                    print("      ⚡ STATE: HIGH URGENCY")
+                    self.bypass_crewai = True
+                    self.urgency_multiplier = 1.5
+                    self.min_z = max(1.2, self.min_z - 0.2)
+                else:
+                    print("      🌿 STATE: SUSTAINABLE GROWTH (Ahead of schedule)")
+                    self.bypass_crewai = False
+                    self.urgency_multiplier = 1.0
+
         while True:
             # ── Daily guards ──
             if self.daily_profit >= self.profit_target:
@@ -423,17 +471,24 @@ class EliteBot:
                         print(f"      ⚠️ Quant Brain failed (safe fallback): {q_err}")
 
                     # ── CrewAI Validation ──
-                    crew_output = evaluate_opportunity(sym_a, sym_b, best_z, qs_context)
-                    data, should_trade, signal = parse_ai_decision(crew_output)
+                    if not self.bypass_crewai:
+                        crew_output = evaluate_opportunity(sym_a, sym_b, best_z, qs_context)
+                        data, should_trade, signal = parse_ai_decision(crew_output)
 
-                    print(f"\n   📋 TRADER AGENT OUTPUT:")
-                    print(json.dumps(data, indent=2))
+                        print(f"\n   📋 TRADER AGENT OUTPUT:")
+                        print(json.dumps(data, indent=2))
 
-                    if not should_trade:
-                        print(f"   🛑 AI rejected (action: {data.get('final_action', 'WAIT')}). Cooldown 1h.")
-                        self.cooldowns[pair_key] = time.time()
-                        time.sleep(15)
-                        continue
+                        if not should_trade:
+                            print(f"   🛑 AI rejected (action: {data.get('final_action', 'WAIT')}). Cooldown 1h.")
+                            self.cooldowns[pair_key] = time.time()
+                            time.sleep(15)
+                            continue
+                    else:
+                        print(f"\n   ⚡ BYPASSING CREW AI (URGENCY ENGINE): Relying on pure Quantitative Instinct!")
+                        should_trade = True
+                        signal = "BUY_PAIR" if best_z < 0 else "SELL_PAIR"
+                        # Maximize kelly and position size limit
+                        kelly_fraction = min(1.0, kelly_fraction * self.urgency_multiplier)
 
                     # ── EXECUTION — mode-aware ──
                     if is_paper:
@@ -461,7 +516,9 @@ class EliteBot:
                     else:
                         # LIVE: fractional notional sizing
                         equity = self.get_account_equity()
-                        budget = round(equity * self.max_position_pct, 2)
+                        # Apply urgency multiplier to max_position_pct (cap at 100%)
+                        aggro_position_pct = min(1.0, self.max_position_pct * self.urgency_multiplier)
+                        budget = round(equity * aggro_position_pct, 2)
 
                         if budget < 1.0:
                             print(f"   ⚠️ Budget ${budget:.2f} below Alpaca $1 minimum. Skipping.")

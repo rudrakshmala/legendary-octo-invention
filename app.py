@@ -172,6 +172,10 @@ class OwnerSettingsPayload(BaseModel):
     max_position_pct: float = 80.0
     trade_once_per_session: bool = True
     max_hold_hours: float = 6.0
+    enable_goal_seeking: bool = False
+    target_goal_usd: float = 72000.0
+    deadline_days: int = 180
+    start_date: str = ""
 
 
 # ── App lifecycle ──
@@ -330,7 +334,11 @@ OWNER_SETTINGS_DEFAULTS = {
     "hard_stop_loss_pct": 2.0,
     "max_position_pct": 80.0,
     "trade_once_per_session": True,
-    "max_hold_hours": 6.0
+    "max_hold_hours": 6.0,
+    "enable_goal_seeking": False,
+    "target_goal_usd": 72000.0,
+    "deadline_days": 180,
+    "start_date": ""
 }
 
 @app.get("/api/owner/settings")
