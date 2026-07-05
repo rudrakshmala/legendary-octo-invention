@@ -176,6 +176,7 @@ class OwnerSettingsPayload(BaseModel):
     target_goal_usd: float = 72000.0
     deadline_days: int = 180
     start_date: str = ""
+    engine_mode: str = "hybrid"
 
 
 # ── App lifecycle ──
@@ -338,7 +339,8 @@ OWNER_SETTINGS_DEFAULTS = {
     "enable_goal_seeking": False,
     "target_goal_usd": 72000.0,
     "deadline_days": 180,
-    "start_date": ""
+    "start_date": "",
+    "engine_mode": "hybrid"
 }
 
 @app.get("/api/owner/settings")

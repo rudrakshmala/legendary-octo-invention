@@ -28,7 +28,8 @@ export default function SettingsPage() {
     enable_goal_seeking: false,
     target_goal_usd: 72000,
     deadline_days: 180,
-    start_date: ''
+    start_date: '',
+    engine_mode: 'hybrid'
   });
   const [ownerSaving, setOwnerSaving] = useState(false);
   const [ownerMsg, setOwnerMsg] = useState(null);
@@ -382,6 +383,19 @@ export default function SettingsPage() {
                     onClick={() => setOwnerSettings(s => ({ ...s, trade_once_per_session: !s.trade_once_per_session }))} />
                 </div>
               </div>
+            </div>
+
+            <div className="form-group" style={{ gridColumn: 'span 2' }}>
+              <label>Trading Engine Mode</label>
+              <select 
+                value={ownerSettings.engine_mode || 'hybrid'} 
+                onChange={e => setOwnerSettings(s => ({ ...s, engine_mode: e.target.value }))}
+                style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+              >
+                <option value="hybrid">🤖 Hybrid (Pairs first, then Universal Stocks) - BEST</option>
+                <option value="universal">🌎 Universal Single-Stock Only (Market Scanner)</option>
+                <option value="pair">⚖️ Strict Pair Trading Only (Original Strategy)</option>
+              </select>
             </div>
           </div>
           

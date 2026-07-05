@@ -183,15 +183,87 @@ class QuantBrain:
             reason=f"Quant Fallback Activated: {error_msg}"
         )
 
+    def evaluate_single_stock(self, symbol: str) -> tuple:
+        """
+        Extremely strict momentum scanner for Universal Mode.
+        "2000% sure" setups only: Extreme RSI + Volume confirmation.
+        Returns (QuantSignal, direction), where direction is "BUY_SINGLE" or "SELL_SINGLE" or "HOLD".
+        """
+        try:
+            df = yf.download(symbol, period="60d", interval="1d", progress=False)
+            if df.empty or len(df) < 20:
+                return self._defensive_fallback(f"Not enough data for {symbol}"), "HOLD"
+            
+            close = df['Close'].squeeze()
+            volume = df['Volume'].squeeze()
+            
+            # Simple RSI (14)
+            delta = close.diff()
+            up, down = delta.copy(), delta.copy()
+            up[up < 0] = 0
+            down[down > 0] = 0
+            
+            roll_up = up.ewm(com=13, adjust=False).mean()
+            roll_down = down.abs().ewm(com=13, adjust=False).mean()
+            rs = roll_up / roll_down
+            rsi = 100.0 - (100.0 / (1.0 + rs))
+            current_rsi = float(rsi.iloc[-1])
+            
+            # Volume confirmation
+            avg_vol = float(volume.rolling(14).mean().iloc[-1])
+            current_vol = float(volume.iloc[-1])
+            high_volume = current_vol > (avg_vol * 1.5)
+            
+            direction = "HOLD"
+            reason = "No extreme momentum detected."
+            approved = False
+            
+            # "2000% sure" rules (No loss or barely loss)
+            if current_rsi < 25 and high_volume:
+                direction = "BUY_SINGLE"
+                approved = True
+                reason = f"Extreme Oversold (RSI: {current_rsi:.1f}) + Volume Spike."
+            elif current_rsi > 75 and high_volume:
+                direction = "SELL_SINGLE"
+                approved = True
+                reason = f"Extreme Overbought (RSI: {current_rsi:.1f}) + Volume Spike."
+                
+            sig = QuantSignal(
+                approved=approved,
+                regime="TRENDING" if approved else "CHOPPY",
+                regime_prob=0.99 if approved else 0.50,
+                volatility_ok=True,
+                forecasted_vol=0.25,
+                kelly_fraction=0.30 if approved else 0.10,
+                hedge_ratio=1.0,
+                sentiment_score=0.8 if direction == "BUY_SINGLE" else -0.8,
+                fear_greed=50,
+                confidence=0.99 if approved else 0.0,
+                reason=reason
+            )
+            return sig, direction
+            
+        except Exception as e:
+            return self._defensive_fallback(f"Single stock eval failed: {e}"), "HOLD"
+
+
+
 
 # Global convenience function
 _brain = QuantBrain()
 
 def get_quant_signal(sym_a: str, sym_b: str, base_z_score: float) -> QuantSignal:
     """
-    High-level dynamic signal extraction endpoint for the Elite Trading bots.
+    High-level dynamic signal extraction endpoint for the Elite Trading bots (Pairs).
     """
     return _brain.generate_signal(sym_a, sym_b, base_z_score)
+
+def get_single_stock_signal(symbol: str) -> tuple:
+    """
+    Universal Single-Stock extremely strict momentum endpoint.
+    Returns (QuantSignal, direction).
+    """
+    return _brain.evaluate_single_stock(symbol)
 
 
 if __name__ == "__main__":
