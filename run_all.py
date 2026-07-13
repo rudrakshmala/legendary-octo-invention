@@ -11,7 +11,7 @@ def launch():
     backend = subprocess.Popen([sys.executable, "app.py"])
     
     # 2. Wait for Backend to initialize
-    print("⏳ Waiting for engines to warm up...")
+    print("⏳ Waiting for engines to warm up...") 
     time.sleep(5)
     
     # 3. Start the Frontend Dashboard (dashboard.py)

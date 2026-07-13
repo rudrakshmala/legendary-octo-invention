@@ -1,0 +1,1 @@
+{"sym_a": "F", "sym_b": "GM", "z_score": -1.92, "approved": true, "regime": "MEAN_REVERTING", "regime_prob": 0.85, "volatility_ok": true, "forecasted_vol": 0.2373, "kelly_fraction": 0.05, "hedge_ratio": 0.1746, "sentiment_score": 0.0, "fear_greed": 50, "reason": "All structural quantitative models validated successfully", "updated_at": "09:19:24"}
