@@ -14,6 +14,19 @@ import config
 # 🚨 IMPORT AI TEAM
 from crew_trader import evaluate_opportunity
 
+# 🛡️ IMPORT RISK GUARDS ENGINE (Additive — does not change existing logic)
+from risk_guards import (
+    is_safe_trading_hours,
+    is_too_late_to_enter,
+    has_earnings_soon,
+    is_liquid_enough,
+    is_drawdown_safe,
+    record_equity_snapshot,
+    get_mtf_z_score,
+    send_telegram_alert,
+    run_monte_carlo
+)
+
 JOURNAL_FILE    = "trade_journal.txt"
 OWNER_SETTINGS_FILE = "owner_settings.json"
 
@@ -168,6 +181,17 @@ class EliteBot:
         # ── Goal-Seeking Engine State ──
         self.bypass_crewai = False
         self.urgency_multiplier = 1.0
+
+        # ── Run Monte Carlo at startup to validate goal feasibility ──
+        try:
+            goal_settings = self.settings
+            if goal_settings.get("enable_goal_seeking") and not is_paper:
+                run_monte_carlo(
+                    start_capital=goal_settings.get("starting_capital_usd", 100),
+                    target=goal_settings.get("target_goal_usd", 72000),
+                    days=goal_settings.get("deadline_days", 180)
+                )
+        except: pass
 
         print(f"   📅 Session Profit so far: ${self.daily_profit:.4f}\n")
 
@@ -385,6 +409,26 @@ class EliteBot:
                 print(f"\n🛑 {'DAILY' if is_paper else 'SESSION'} STOP HIT (${self.daily_profit:.4f}). Shutting down.")
                 break
 
+            # ── 🛡️ RISK GUARDS (Additive) ──
+            # Guard 1: Market Hours
+            if not is_safe_trading_hours():
+                time.sleep(300)  # Wait 5 min and re-check
+                continue
+
+            # Guard 2: Overnight Gap Protection
+            if is_too_late_to_enter():
+                print("   🌙 Waiting for next session...")
+                time.sleep(600)
+                continue
+
+            # Guard 3: Rolling Drawdown Circuit Breaker
+            current_equity = self.get_account_equity()
+            record_equity_snapshot(current_equity)
+            if not is_drawdown_safe(current_equity):
+                send_telegram_alert("🔴 CIRCUIT BREAKER: 10% drawdown triggered. Trading frozen 24h.")
+                time.sleep(86400)  # 24 hour freeze
+                continue
+
             print(f"\n[{time.strftime('%H:%M:%S')}] 🔭 SCANNING MARKET... (Min |Z| ≥ {self.min_z})")
             best_opp = None
             best_z   = 0.0
@@ -407,11 +451,18 @@ class EliteBot:
                         if time.time() - self.cooldowns[pair_key] < 3600:
                             continue
     
+                    # ── Guard 4: Earnings Blackout ──
+                    if has_earnings_soon(sym_a) or has_earnings_soon(sym_b):
+                        continue
+
                     z, signal = calculate_z_score(sym_a, sym_b)
                     if z is None: continue
-    
+
                     if abs(z) >= self.min_z and abs(z) > abs(best_z):
-                        best_z, best_opp = z, (sym_a, sym_b, signal)
+                        # ── Guard 5: Multi-Timeframe Confirmation ──
+                        _, _, mtf_confirmed = get_mtf_z_score(sym_a, sym_b)
+                        if mtf_confirmed:
+                            best_z, best_opp = z, (sym_a, sym_b, signal)
 
             if best_opp:
                 sym_a, sym_b, signal = best_opp
@@ -423,7 +474,8 @@ class EliteBot:
                     continue
 
                 print(f"\n   🚨 SIGNAL: {sym_a}/{sym_b}  Z={best_z:.2f}")
-                print("   📞 Calling CrewAI team for validation...")
+                print("   📡 Calling CrewAI team for validation...")
+                send_telegram_alert(f"📊 Signal Found: {sym_a}/{sym_b} | Z={best_z:.2f}")
 
                 try:
                     # ── Quant Brain ──
@@ -573,6 +625,12 @@ class EliteBot:
                 best_uni = None
                 for sym in UNIVERSAL_STOCKS:
                     try:
+                        # Guard 4b: Earnings Blackout on universal stocks
+                        if has_earnings_soon(sym, days=5):
+                            continue
+                        # Guard 6: Liquidity Filter
+                        if not is_liquid_enough(sym):
+                            continue
                         sig, direction = get_single_stock_signal(sym)
                         if sig.approved:
                             best_uni = (sym, direction, sig)
@@ -608,13 +666,21 @@ class EliteBot:
                             take_profit=TakeProfitRequest(limit_price=round(tp_price, 2)),
                             stop_loss=StopLossRequest(stop_price=round(sl_price, 2))
                         ))
+                        send_telegram_alert(
+                            f"⚡ TRADE ENTERED\n"
+                            f"Stock: {sym} | {direction}\n"
+                            f"Entry: ${price:.2f} | Budget: ${budget:.2f}\n"
+                            f"🎯 TP: ${tp_price:.2f} | 🛑 SL: ${sl_price:.2f}"
+                        )
                         time.sleep(5)
                         
                         result = self.trailing_stop_loop()
                         print(f"\\n   📊 Trade result: {result}")
+                        send_telegram_alert(f"📊 Trade Closed: {sym}\nResult: {result}")
                         
                         if not is_paper and self.once_per_session:
                             print("\\n✅ Session complete. Restart bot.")
+                            send_telegram_alert("✅ Session complete. Restart bot to trade again.")
                             return
                     except Exception as e:
                         print(f"   ❌ Error: {e}")
