@@ -56,6 +56,8 @@ const api = {
   // Backtest
   runBacktest: (symbolA, symbolB) =>
     request('/api/backtest', { method: 'POST', body: JSON.stringify({ symbol_a: symbolA, symbol_b: symbolB }) }),
+  runBacktestAll: () => request('/api/backtest/all'),
+  runAccountBacktest: () => request('/api/backtest/account'),
 };
 
 export default api;

@@ -10,17 +10,19 @@ from crewai.tools import tool
 
 # Pointing CrewAI to Groq's model rotation pool to automatically bypass rate limits
 GROQ_MODELS = [
-    "groq/llama-3.3-70b-versatile",
     "groq/llama-3.1-8b-instant",
+    "groq/llama-3.3-70b-versatile",
+    "groq/llama3-70b-8192",
     "groq/gemma2-9b-it"
 ]
 current_model_idx = 0
 
-def is_rate_limit_exception(e) -> bool:
-    """Detect if an exception is a rate limit or API quota exceeded error."""
+def is_retryable_exception(e) -> bool:
+    """Detect if an exception is rate limit, model not found, or temporary API error."""
     err_str = str(e).lower()
     return any(keyword in err_str for keyword in [
-        "rate limit", "429", "rate_limit", "limit exceeded", "ratelimit", "too many requests"
+        "rate limit", "429", "rate_limit", "limit exceeded", "ratelimit", "too many requests",
+        "notfounderror", "model_not_found", "does not exist", "service unavailable", "503"
     ])
 
 groq_llm = LLM(
@@ -54,8 +56,18 @@ def market_news_tool(ticker: str) -> str:
     Input MUST be a single valid stock ticker symbol (e.g., 'V', 'MA').
     """
     try:
-        stock = yf.Ticker(ticker)
-        news_items = stock.news
+        import os
+        import requests
+        api_key = os.getenv("API_TUBE_NEWS_KEY")
+        if not api_key:
+            return f"Error: API_TUBE_NEWS_KEY not configured. Cannot fetch news for {ticker}."
+            
+        url = f"https://api.apitube.io/v1/news/everything?q={ticker}&language=en&per_page=5"
+        headers = {"X-API-Key": api_key}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        news_items = response.json().get('results', [])
         
         if not news_items:
             return f"No recent financial news found for {ticker}."
@@ -63,8 +75,9 @@ def market_news_tool(ticker: str) -> str:
         news_summary = f"--- Recent News for {ticker} ---\n"
         for item in news_items[:5]: 
             title = item.get('title', 'No Title')
-            publisher = item.get('publisher', 'Unknown Publisher')
-            link = item.get('link', 'No Link')
+            source_info = item.get('source', {})
+            publisher = source_info.get('domain', 'Unknown Publisher') if isinstance(source_info, dict) else 'Unknown Publisher'
+            link = item.get('href', 'No Link')
             
             news_summary += f"\n📰 **{title}** ({publisher})\n   Link: {link}\n"
             
@@ -239,10 +252,10 @@ def evaluate_smart_opportunity(ticker_a, ticker_b=None, technicals=None, quant_c
             return trading_crew.kickoff()
             
         except Exception as e:
-            if is_rate_limit_exception(e):
+            if is_retryable_exception(e):
                 current_model_idx = (current_model_idx + 1) % len(GROQ_MODELS)
                 new_model = GROQ_MODELS[current_model_idx]
-                print(f"   ⚠️ Rate limit hit on model '{groq_llm.model}'!")
+                print(f"   ⚠️ Model/Rate error on '{groq_llm.model}': {e}")
                 print(f"   🔄 Rotating to fallback model: '{new_model}' and retrying immediately...")
                 groq_llm.model = new_model
                 
@@ -250,12 +263,82 @@ def evaluate_smart_opportunity(ticker_a, ticker_b=None, technicals=None, quant_c
                 for agent in [quant_agent, analyst_agent, bear_analyst_agent, cio_agent]:
                     agent.llm = groq_llm
             else:
-                # Raise non-rate-limit errors (like authentication issues) immediately
-                print(f"   ❌ CrewAI failed with non-rate-limit error: {e}")
+                # Raise non-retryable errors immediately
+                print(f"   ❌ CrewAI failed with error: {e}")
                 raise e
                 
     raise Exception("All models in the Groq rotation pool have hit rate limits.")
 
 # Legacy Support
 def evaluate_opportunity(sym_a, sym_b, z_score, quant_context=""):
-    return evaluate_smart_opportunity(sym_a, sym_b, {"z_score": z_score, "type": "pair"}, quant_context)
+    return evaluate_smart_opportunity(sym_a, sym_b, {"z_score": z_score, "type": "pair"}, quant_context)
+
+# --- 🛡️ TRADE MANAGER ENGINE ---
+trade_manager_agent = Agent(
+    role='Elite Trade Manager',
+    goal='Monitor active open positions, evaluate real-time momentum, news, and technicals, and decide whether to HOLD or CLOSE the position to maximize profits or cut losses.',
+    backstory="""You are a ruthless risk manager and elite trader. You do not care about entry prices. You only look at the current chart and news to ask: "If I didn't have this position, would I buy it right now?" If the answer is no, you cut it. You output strict JSON.""",
+    verbose=True,
+    allow_delegation=False,
+    tools=[live_stock_data_tool, market_news_tool],
+    llm=groq_llm
+)
+
+def evaluate_open_position(ticker, current_pnl, entry_price, quant_context=""):
+    """
+    Evaluates an existing open position and decides to HOLD or CLOSE.
+    """
+    gkey = os.environ.get("GROQ_API_KEY", "")
+    print(f"\n📢 Assembling the Trade Manager to evaluate OPEN POSITION: {ticker}")
+    
+    desc = f"""Evaluate the open position for {ticker}.
+    Current PnL: ${current_pnl:.2f}
+    Entry Price: ${entry_price:.2f}
+    
+    {"Additional Quant/Market Context: " + quant_context if quant_context else ""}
+    
+    Analyze the live price, volume, and any breaking news using your tools.
+    Decide if the momentum and fundamentals support holding the trade, or if it should be closed to secure profits/cut losses.
+    
+    Output JSON only:
+    {{
+        "reason": "...",
+        "confidence": 0 to 100,
+        "final_action": "HOLD" or "CLOSE"
+    }}"""
+    
+    task_manage = Task(
+        description=desc,
+        expected_output='A strict JSON final decision object.',
+        agent=trade_manager_agent
+    )
+    
+    global current_model_idx
+    max_retries = len(GROQ_MODELS)
+    
+    for attempt in range(max_retries):
+        try:
+            print(f"   🤖 Evaluating position using Groq model: {groq_llm.model} (Attempt {attempt+1}/{max_retries})")
+            
+            manager_crew = Crew(
+                agents=[trade_manager_agent],
+                tasks=[task_manage],
+                process=Process.sequential,
+                verbose=False
+            )
+            
+            return manager_crew.kickoff()
+            
+        except Exception as e:
+            if is_retryable_exception(e):
+                current_model_idx = (current_model_idx + 1) % len(GROQ_MODELS)
+                new_model = GROQ_MODELS[current_model_idx]
+                print(f"   ⚠️ Model/Rate error on '{groq_llm.model}': {e}")
+                print(f"   🔄 Rotating to fallback model: '{new_model}' and retrying immediately...")
+                groq_llm.model = new_model
+                trade_manager_agent.llm = groq_llm
+            else:
+                print(f"   ❌ CrewAI failed with error: {e}")
+                raise e
+                
+    raise Exception("All models in the Groq rotation pool have hit rate limits.")

@@ -3,6 +3,7 @@ import math
 import os
 import datetime
 import pickle
+import threading
 import numpy as np
 import pandas as pd
 import config
@@ -12,6 +13,11 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import CryptoHistoricalDataClient
 from alpaca.data.requests import CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame
+import json
+from crew_trader import evaluate_open_position
+
+# ── Stop signal: set by app.py when the user clicks Stop ──
+_stop_event = threading.Event()
 
 # --- ⚙️ PRO SETTINGS ---
 DAILY_PROFIT_GOAL = 500.0   
@@ -178,7 +184,7 @@ class CryptoBot:
         stop_price = HARD_STOP_LOSS
         print(f"   🚀 RIDE STARTED (Stop: ${stop_price:.2f})")
         
-        while True:
+        while not _stop_event.is_set():
             try:
                 positions = trade_client.get_all_positions()
                 if not positions: 
@@ -207,16 +213,67 @@ class CryptoBot:
                     return
 
                 time.sleep(2)
-            except: time.sleep(5)
+            except:
+                time.sleep(5)
+        # Stop was requested — close open positions cleanly
+        print("\n   ⏹️ Stop signal received. Closing positions...")
+        self.close_all()
 
     def run(self):
         print("   ⏳ Connecting to Alpaca Data Stream...")
         time.sleep(2)
 
-        while True:
+        while not _stop_event.is_set():
             if self.daily_profit >= DAILY_PROFIT_GOAL:
                 print(f"\n🏆 MOON MISSION COMPLETE (${self.daily_profit:.2f}).")
                 break
+
+            # ── 🤖 ACTIVE POSITION MANAGER (TRADE MANAGER AGENT) ──
+            try:
+                positions = client.get_all_positions()
+                if positions:
+                    print(f"\n[{time.strftime('%H:%M:%S')}] 👮 TRADE MANAGER: Evaluating {len(positions)} open positions...")
+                    for p in positions:
+                        try:
+                            pnl = float(p.unrealized_pl)
+                            entry = float(p.avg_entry_price)
+                            sym = p.symbol
+                            
+                            print(f"      🔍 Reviewing {sym} (PnL: ${pnl:.2f})")
+                            
+                            try:
+                                decision_output = evaluate_open_position(sym, pnl, entry)
+                                
+                                data = {}
+                                if hasattr(decision_output, "json_dict"):
+                                    data = decision_output.json_dict
+                                elif isinstance(decision_output, dict):
+                                    data = decision_output
+                                elif hasattr(decision_output, "raw"):
+                                    try:
+                                        raw = decision_output.raw.strip()
+                                        if raw.startswith("```json"): raw = raw[7:-3]
+                                        elif raw.startswith("```"): raw = raw[3:-3]
+                                        data = json.loads(raw)
+                                    except:
+                                        pass
+                                
+                                action = data.get("final_action", "HOLD").upper()
+                                reason = data.get("reason", "No reason provided")
+                                print(f"      🧠 Decision: {action} | Reason: {reason}")
+                                
+                                if action == "CLOSE":
+                                    print(f"      ⚡ EXECUTING CLOSE on {sym}")
+                                    client.close_position(sym)
+                                    self.daily_profit += pnl
+                                    print(f"      ✅ Closed {sym} for ${pnl:.2f} profit/loss.")
+                            except Exception as e:
+                                print(f"      ⚠️ Trade Manager failed to evaluate {sym}: {e}")
+                                
+                        except Exception as inner_e:
+                            print(f"      ⚠️ Position loop error: {inner_e}")
+            except Exception as e:
+                pass
 
             print(f"\n[{time.strftime('%H:%M:%S')}] 📡 SCANNING (via Alpaca Data API)...")
             best_opp = None
@@ -279,7 +336,11 @@ class CryptoBot:
                     print("   ⚠️ Insufficient Funds.")
             else:
                 print("   💤 No setups. Retrying in 10s...")
-                time.sleep(10)
+                # Use interruptible sleep so stop signal is detected quickly
+                for _ in range(10):
+                    if _stop_event.is_set():
+                        break
+                    time.sleep(1)
 
 if __name__ == "__main__":
     try: CryptoBot().run()

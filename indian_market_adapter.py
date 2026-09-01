@@ -206,5 +206,5 @@ class IndianMarketAdapter(BaseMarketAdapter):
             "Indian corporate earnings season, FII/DII flow data, "
             "and India-specific geopolitical risks. "
             "All prices are in Indian Rupees (₹). "
-            "Trading hours: 09:15 AM to 03:30 PM IST."
+            "Trading hours: 09:15 AM to 03.30PM IST."
         )

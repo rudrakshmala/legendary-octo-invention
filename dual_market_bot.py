@@ -21,6 +21,7 @@ import datetime
 
 from market_adapter import BaseMarketAdapter
 from agent_context import build_enriched_crew_tasks
+from crew_trader import evaluate_open_position
 
 
 class DualMarketBot:
@@ -212,7 +213,56 @@ class DualMarketBot:
                 print(f"\n🛑 DAILY STOP HIT ({self.adapter.currency_symbol}{self.daily_profit:.2f}). Shutting down.")
                 break
 
+            # ── 🤖 ACTIVE POSITION MANAGER (TRADE MANAGER AGENT) ──
+            try:
+                positions = self.adapter.get_open_positions()
+                if positions:
+                    print(f"\n[{time.strftime('%H:%M:%S')}] 👮 TRADE MANAGER: Evaluating {len(positions)} open positions...")
+                    for p in positions:
+                        try:
+                            pnl   = float(getattr(p, 'unrealized_pl', 0) or 0)
+                            entry = float(getattr(p, 'avg_entry_price', 0) or 0)
+                            sym   = str(getattr(p, 'symbol', 'UNKNOWN'))
+
+                            print(f"      🔍 Reviewing {sym} (PnL: {self.adapter.currency_symbol}{pnl:.2f})")
+
+                            try:
+                                decision_output = evaluate_open_position(sym, pnl, entry)
+
+                                data = {}
+                                if hasattr(decision_output, 'json_dict') and decision_output.json_dict:
+                                    data = decision_output.json_dict
+                                elif isinstance(decision_output, dict):
+                                    data = decision_output
+                                elif hasattr(decision_output, 'raw'):
+                                    try:
+                                        raw = decision_output.raw.strip()
+                                        if raw.startswith('```json'): raw = raw[7:-3]
+                                        elif raw.startswith('```'): raw = raw[3:-3]
+                                        data = json.loads(raw)
+                                    except:
+                                        pass
+
+                                action = data.get('final_action', 'HOLD').upper()
+                                reason = data.get('reason', 'No reason provided')
+                                print(f"      🧠 Decision: {action} | Reason: {reason}")
+
+                                if action == 'CLOSE':
+                                    print(f"      ⚡ EXECUTING CLOSE on {sym}")
+                                    self.adapter.close_position(sym)
+                                    self.daily_profit += pnl
+                                    print(f"      ✅ Closed {sym} for {self.adapter.currency_symbol}{pnl:.2f}.")
+
+                            except Exception as e:
+                                print(f"      ⚠️ Trade Manager failed to evaluate {sym}: {e}")
+
+                        except Exception as inner_e:
+                            print(f"      ⚠️ Position loop error: {inner_e}")
+            except Exception:
+                pass
+
             print(f"\n[{time.strftime('%H:%M:%S')}] 🔭 SCANNING {self.adapter.market_name.upper()} MARKET...")
+
 
             best_opp = None
             best_z = 0

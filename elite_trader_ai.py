@@ -12,7 +12,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 import config
 
 # 🚨 IMPORT AI TEAM
-from crew_trader import evaluate_opportunity
+from crew_trader import evaluate_opportunity, evaluate_open_position
 
 # 🛡️ IMPORT RISK GUARDS ENGINE (Additive — does not change existing logic)
 from risk_guards import (
@@ -429,6 +429,53 @@ class EliteBot:
                 time.sleep(86400)  # 24 hour freeze
                 continue
 
+            # ── 🤖 ACTIVE POSITION MANAGER (TRADE MANAGER AGENT) ──
+            try:
+                positions = client.get_all_positions()
+                if positions:
+                    print(f"\n[{time.strftime('%H:%M:%S')}] 👮 TRADE MANAGER: Evaluating {len(positions)} open positions...")
+                    for p in positions:
+                        try:
+                            pnl = float(p.unrealized_pl)
+                            entry = float(p.avg_entry_price)
+                            sym = p.symbol
+                            
+                            print(f"      🔍 Reviewing {sym} (PnL: ${pnl:.2f})")
+                            
+                            try:
+                                decision_output = evaluate_open_position(sym, pnl, entry)
+                                
+                                data = {}
+                                if hasattr(decision_output, "json_dict"):
+                                    data = decision_output.json_dict
+                                elif isinstance(decision_output, dict):
+                                    data = decision_output
+                                elif hasattr(decision_output, "raw"):
+                                    try:
+                                        raw = decision_output.raw.strip()
+                                        if raw.startswith("```json"): raw = raw[7:-3]
+                                        elif raw.startswith("```"): raw = raw[3:-3]
+                                        data = json.loads(raw)
+                                    except:
+                                        pass
+                                
+                                action = data.get("final_action", "HOLD").upper()
+                                reason = data.get("reason", "No reason provided")
+                                print(f"      🧠 Decision: {action} | Reason: {reason}")
+                                
+                                if action == "CLOSE":
+                                    print(f"      ⚡ EXECUTING CLOSE on {sym}")
+                                    client.close_position(sym)
+                                    self.daily_profit += pnl
+                                    print(f"      ✅ Closed {sym} for ${pnl:.2f} profit/loss.")
+                            except Exception as e:
+                                print(f"      ⚠️ Trade Manager failed to evaluate {sym}: {e}")
+                                
+                        except Exception as inner_e:
+                            print(f"      ⚠️ Position loop error: {inner_e}")
+            except Exception as e:
+                pass
+
             print(f"\n[{time.strftime('%H:%M:%S')}] 🔭 SCANNING MARKET... (Min |Z| ≥ {self.min_z})")
             best_opp = None
             best_z   = 0.0
@@ -576,7 +623,8 @@ class EliteBot:
                         # LIVE: fractional notional sizing
                         equity = self.get_account_equity()
                         # Apply urgency multiplier to max_position_pct (cap at 100%)
-                        aggro_position_pct = min(1.0, self.max_position_pct * self.urgency_multiplier)
+                        _pos_pct = self.max_position_pct if self.max_position_pct is not None else 0.80
+                        aggro_position_pct = min(1.0, _pos_pct * self.urgency_multiplier)
                         budget = round(equity * aggro_position_pct, 2)
 
                         if budget < 1.0:
@@ -643,7 +691,8 @@ class EliteBot:
                     print(f"   🧠 Reason: {sig.reason}")
                     
                     try:
-                        budget = round(self.get_account_equity() * min(1.0, self.max_position_pct * self.urgency_multiplier), 2)
+                        _pos_pct2 = self.max_position_pct if self.max_position_pct is not None else 0.80
+                        budget = round(self.get_account_equity() * min(1.0, _pos_pct2 * self.urgency_multiplier), 2)
                         if budget < 1.0:
                             print("   ⚠️ Budget below $1 minimum. Skipping.")
                             continue
@@ -660,12 +709,22 @@ class EliteBot:
                         sl_price = price * 0.98 if side == OrderSide.BUY else price * 1.02
                         
                         print(f"   ⚡ Submitting Bracket Order: TP=${tp_price:.2f}, SL=${sl_price:.2f}")
-                        
-                        client.submit_order(MarketOrderRequest(
-                            symbol=sym, notional=budget, side=side, time_in_force=TimeInForce.DAY,
-                            take_profit=TakeProfitRequest(limit_price=round(tp_price, 2)),
-                            stop_loss=StopLossRequest(stop_price=round(sl_price, 2))
-                        ))
+
+                        # Alpaca does NOT allow fractional shares for short (SELL) orders.
+                        # For SELL: use whole share qty. For BUY: use notional (fractional ok).
+                        if side == OrderSide.SELL:
+                            whole_qty = max(1, int(budget / price))  # round down to whole shares
+                            client.submit_order(MarketOrderRequest(
+                                symbol=sym, qty=whole_qty, side=side, time_in_force=TimeInForce.DAY,
+                                take_profit=TakeProfitRequest(limit_price=round(tp_price, 2)),
+                                stop_loss=StopLossRequest(stop_price=round(sl_price, 2))
+                            ))
+                        else:
+                            client.submit_order(MarketOrderRequest(
+                                symbol=sym, notional=budget, side=side, time_in_force=TimeInForce.DAY,
+                                take_profit=TakeProfitRequest(limit_price=round(tp_price, 2)),
+                                stop_loss=StopLossRequest(stop_price=round(sl_price, 2))
+                            ))
                         send_telegram_alert(
                             f"⚡ TRADE ENTERED\n"
                             f"Stock: {sym} | {direction}\n"

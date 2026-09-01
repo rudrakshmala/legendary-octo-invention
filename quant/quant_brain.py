@@ -193,10 +193,21 @@ class QuantBrain:
             df = yf.download(symbol, period="60d", interval="1d", progress=False)
             if df.empty or len(df) < 20:
                 return self._defensive_fallback(f"Not enough data for {symbol}"), "HOLD"
-            
+
+            # Robustly extract Close and Volume as 1D Series (handles MultiIndex from yfinance)
             close = df['Close'].squeeze()
+            if hasattr(close, 'columns'):  # Still a DataFrame (multi-ticker edge case)
+                close = close.iloc[:, 0]
+            close = close.dropna().astype(float)
+
             volume = df['Volume'].squeeze()
-            
+            if hasattr(volume, 'columns'):
+                volume = volume.iloc[:, 0]
+            volume = volume.dropna().astype(float)
+
+            if len(close) < 20:
+                return self._defensive_fallback(f"Not enough clean data for {symbol}"), "HOLD"
+
             # Simple RSI (14)
             delta = close.diff()
             up, down = delta.copy(), delta.copy()
@@ -208,7 +219,7 @@ class QuantBrain:
             rs = roll_up / roll_down
             rsi = 100.0 - (100.0 / (1.0 + rs))
             current_rsi = float(rsi.iloc[-1])
-            
+
             # Volume confirmation
             avg_vol = float(volume.rolling(14).mean().iloc[-1])
             current_vol = float(volume.iloc[-1])

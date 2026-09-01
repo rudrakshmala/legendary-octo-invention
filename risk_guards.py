@@ -71,7 +71,9 @@ def is_too_late_to_enter() -> bool:
 _earnings_cache = {}  # Cache to avoid hammering yfinance
 
 def has_earnings_soon(symbol: str, days: int = 5) -> bool:
-    """Returns True if this symbol has earnings within `days` calendar days."""
+    """Returns True if this symbol has earnings within `days` calendar days.
+    Handles both old (DataFrame) and new (dict) yfinance .calendar formats.
+    """
     global _earnings_cache
     cache_key = f"{symbol}_{datetime.date.today()}"
 
@@ -79,29 +81,53 @@ def has_earnings_soon(symbol: str, days: int = 5) -> bool:
         return _earnings_cache[cache_key]
 
     try:
+        import warnings
         ticker = yf.Ticker(symbol)
-        cal = ticker.calendar
-        if cal is None or cal.empty:
+
+        # Suppress yfinance 401/crumb warnings — they are non-fatal
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            cal = ticker.calendar
+
+        if cal is None:
             _earnings_cache[cache_key] = False
             return False
 
-        # calendar is a DataFrame with columns as dates
         today = datetime.date.today()
-        for col in cal.columns:
+        dates_to_check = []
+
+        # yfinance >= 0.2.x returns a dict, older versions return a DataFrame
+        if isinstance(cal, dict):
+            # New format: {"Earnings Date": [Timestamp(...)], ...}
+            for key in ("Earnings Date", "Earnings Dates", "earningsDate"):
+                if key in cal:
+                    val = cal[key]
+                    if isinstance(val, list):
+                        dates_to_check.extend(val)
+                    else:
+                        dates_to_check.append(val)
+                    break
+        elif hasattr(cal, "columns"):
+            # Old DataFrame format — columns are dates
+            for col in cal.columns:
+                dates_to_check.append(col)
+
+        for d in dates_to_check:
             try:
-                earnings_dt = pd.Timestamp(col).date()
+                earnings_dt = pd.Timestamp(d).date()
                 delta = (earnings_dt - today).days
                 if 0 <= delta <= days:
                     print(f"   🚫 EARNINGS GUARD: {symbol} has earnings in {delta} day(s). Skipping.")
                     _earnings_cache[cache_key] = True
                     return True
-            except:
+            except Exception:
                 continue
 
         _earnings_cache[cache_key] = False
         return False
-    except Exception as e:
-        print(f"   ⚠️ Earnings check failed for {symbol}: {e} — allowing.")
+    except Exception:
+        # Silently fail-open (don't print for every ticker — too noisy)
+        _earnings_cache[cache_key] = False
         return False
 
 

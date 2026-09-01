@@ -70,30 +70,28 @@ class SentimentEngine:
 
     def get_ticker_news_sentiment(self, ticker: str) -> float:
         """
-        Pulls Finnhub news headlines for this ticker and calculates sentiment.
+        Pulls APITube news headlines for this ticker and calculates sentiment.
         Scores range: -1.0 (Very Bearish) to +1.0 (Very Bullish)
         Neutral return: 0.0
         """
-        if not self.finnhub_key:
+        api_tube_key = os.environ.get("API_TUBE_NEWS_KEY", "")
+        if not api_tube_key:
             return 0.0  # Safe neutral default if no key
 
-        # Query Finnhub company news for the last 3 days
-        import datetime
-        today = datetime.date.today()
-        three_days_ago = today - datetime.timedelta(days=3)
-
-        url = (
-            f"https://finnhub.io/api/v1/company-news?"
-            f"symbol={ticker}&from={three_days_ago}&to={today}&token={self.finnhub_key}"
-        )
-
-        raw = self._safe_fetch_url(url, timeout=4)
-        if not raw:
-            return 0.0
-
+        url = f"https://api.apitube.io/v1/news/everything?q={ticker}&language=en&per_page=15"
+        import urllib.request
+        
         try:
-            headlines = json.loads(raw)
-            if not isinstance(headlines, list) or len(headlines) == 0:
+            req = urllib.request.Request(
+                url, 
+                headers={'X-API-Key': api_tube_key, 'User-Agent': 'Mozilla/5.0'}
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                raw = response.read().decode('utf-8', errors='replace')
+                
+            data = json.loads(raw)
+            headlines = data.get('results', [])
+            if not headlines:
                 return 0.0
 
             # Extremely fast dictionary-based keyword classifier
@@ -112,8 +110,11 @@ class SentimentEngine:
 
             # Analyze up to top 15 recent headlines to prevent rate-limit lags
             for item in headlines[:15]:
-                headline = item.get("headline", "").lower()
-                summary = item.get("summary", "").lower()
+                headline = item.get("title", "").lower()
+                summary = item.get("description", "")
+                if summary is None:
+                    summary = ""
+                summary = summary.lower()
                 text = headline + " " + summary
 
                 pos_count = sum(1 for w in pos_words if w in text)

@@ -548,19 +548,32 @@ def get_quote(symbol: str):
         if isinstance(hist.columns, pd.MultiIndex):
             hist.columns = hist.columns.get_level_values(0)
         
+        import math
         current = float(hist["Close"].iloc[-1])
+        if math.isnan(current): current = 0.0
+        
         prev = float(hist["Close"].iloc[-2]) if len(hist) > 1 else current
+        if math.isnan(prev): prev = current
+        
         change = current - prev
         change_pct = (change / prev * 100) if prev != 0 else 0
+        
+        high = float(hist["High"].iloc[-1])
+        low = float(hist["Low"].iloc[-1])
+        if math.isnan(high): high = current
+        if math.isnan(low): low = current
+        
+        volume = float(hist["Volume"].iloc[-1])
+        if math.isnan(volume): volume = 0
         
         return {
             "symbol": symbol,
             "price": round(current, 4),
             "change": round(change, 4),
             "change_pct": round(change_pct, 2),
-            "high": round(float(hist["High"].iloc[-1]), 4),
-            "low": round(float(hist["Low"].iloc[-1]), 4),
-            "volume": int(hist["Volume"].iloc[-1])
+            "high": round(high, 4),
+            "low": round(low, 4),
+            "volume": int(volume)
         }
     except Exception as e:
         return {"symbol": symbol, "price": 0, "change": 0, "change_pct": 0, "error": str(e)}
@@ -694,6 +707,7 @@ def run_bot_wrapper(mode: str):
         elif mode == "crypto":
             import crypto_trader_ai
             importlib.reload(crypto_trader_ai)
+            crypto_trader_ai._stop_event.clear()  # Reset stop signal before starting
             bot = crypto_trader_ai.CryptoBot()
             bot.run()
         elif mode == "sniper":
@@ -789,6 +803,12 @@ def stop_bot():
     global bot_running
     bot_running = False
     engine_status["running"] = False
+    # Signal the crypto bot's internal loops to exit
+    try:
+        import crypto_trader_ai
+        crypto_trader_ai._stop_event.set()
+    except Exception:
+        pass
     add_log("⏹️ Bot stop requested by user", "warning")
     return {"msg": "Stop signal sent", "running": False}
 
@@ -926,6 +946,263 @@ def run_backtest(payload: BacktestPayload):
             "trades": trades[-20:],
             "equity_curve": equity_curve
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/backtest/all")
+def run_backtest_all():
+    """Run backtest on ALL defined pairs and return aggregated overall results."""
+    import yfinance as yf
+    import pandas as pd
+    import numpy as np
+
+    STOCK_PAIRS = [("MSFT", "AAPL"), ("KO", "PEP"), ("XOM", "CVX")]
+    CRYPTO_PAIRS_YF = [("BTC-USD", "ETH-USD"), ("ETH-USD", "SOL-USD"), ("BTC-USD", "LTC-USD")]
+    ALL_PAIRS = [("stock", a, b) for a, b in STOCK_PAIRS] + [("crypto", a, b) for a, b in CRYPTO_PAIRS_YF]
+
+    def _backtest_pair(sym_a: str, sym_b: str):
+        try:
+            df_a = yf.download(sym_a, period="1y", interval="1d", progress=False)
+            df_b = yf.download(sym_b, period="1y", interval="1d", progress=False)
+            if df_a.empty or df_b.empty: return None
+            df = pd.DataFrame({'a': df_a['Close'].squeeze(), 'b': df_b['Close'].squeeze()}).dropna()
+            if len(df) < 25: return None
+            df['spread'] = df['a'] / df['b']
+            df['z'] = (df['spread'] - df['spread'].rolling(20).mean()) / df['spread'].rolling(20).std()
+            df = df.dropna()
+            balance, position, entry_spread, trades, equity = 10000.0, 0, 0.0, [], []
+            for idx, row in df.iterrows():
+                z, spread = float(row['z']), float(row['spread'])
+                if position == 0:
+                    if z < -1.5: position, entry_spread = 1, spread
+                    elif z > 1.5: position, entry_spread = -1, spread
+                elif position != 0:
+                    if abs(z) < 0.5 or (position == 1 and z > 1.5) or (position == -1 and z < -1.5):
+                        pnl = (spread - entry_spread) * 5000 / entry_spread if position == 1 else (entry_spread - spread) * 5000 / entry_spread
+                        balance += pnl
+                        trades.append({"date": str(idx.date()), "pnl": round(pnl, 2), "result": "WIN" if pnl > 0 else "LOSS", "pair": f"{sym_a}/{sym_b}"})
+                        position = 0
+                equity.append({"date": str(idx.date()), "equity": round(balance, 2)})
+            wins = len([t for t in trades if t["pnl"] > 0])
+            return {"pair": f"{sym_a}/{sym_b}", "initial_balance": 10000.0, "final_balance": round(balance, 2), "total_return_pct": round((balance - 10000) / 100, 2), "total_trades": len(trades), "wins": wins, "losses": len(trades) - wins, "win_rate": round(wins / max(len(trades), 1) * 100, 1), "trades": trades[-10:], "equity_curve": equity}
+        except: return None
+
+    pair_results = [r for r in [_backtest_pair(a, b) for m, a, b in ALL_PAIRS] if r]
+    if not pair_results: raise HTTPException(status_code=500, detail="Data fetch failed.")
+    total_final = sum(r["final_balance"] for r in pair_results)
+    total_trades = sum(r["total_trades"] for r in pair_results)
+    total_wins = sum(r["wins"] for r in pair_results)
+    pair_results_sorted = sorted(pair_results, key=lambda r: r["total_return_pct"], reverse=True)
+    return {
+        "summary": {
+            "pairs_tested": len(pair_results), "total_initial_capital": 10000.0 * len(pair_results), "total_final_capital": round(total_final, 2),
+            "total_return_pct": round((total_final - 10000 * len(pair_results)) / (100 * len(pair_results)), 2),
+            "total_trades": total_trades, "total_wins": total_wins, "overall_win_rate": round(total_wins / max(total_trades, 1) * 100, 1),
+            "best_pair": pair_results_sorted[0]["pair"], "worst_pair": pair_results_sorted[-1]["pair"]
+        },
+        "pair_results": pair_results_sorted
+    }
+
+
+@app.get("/api/backtest/account")
+def run_account_backtest():
+    """Backtest using REAL filled orders from the currently attached Alpaca account.
+
+    Fetches all closed/filled orders, matches BUY vs SELL per symbol using FIFO,
+    computes actual realised P&L, equity curve, win rate, and return %.
+    """
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+
+        client = get_trading_client()
+
+        # ── 1. Fetch all filled orders (up to 500) ──
+        orders = client.get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED,
+            limit=500
+        ))
+
+        filled = []
+        for o in orders:
+            status_val = o.status.value if hasattr(o.status, 'value') else str(o.status)
+            if status_val != "filled":
+                continue
+            filled_qty  = float(o.filled_qty)  if o.filled_qty  else 0.0
+            filled_price = float(o.filled_avg_price) if o.filled_avg_price else 0.0
+            if filled_qty == 0 or filled_price == 0:
+                continue
+            side = o.side.value if hasattr(o.side, 'value') else str(o.side)
+            filled.append({
+                "symbol": o.symbol,
+                "side":   side,          # "buy" or "sell"
+                "qty":    filled_qty,
+                "price":  filled_price,
+                "filled_at": str(o.filled_at) if o.filled_at else "",
+            })
+
+        if not filled:
+            return {
+                "account_summary": {
+                    "total_orders_found": 0,
+                    "matched_trades": 0,
+                    "total_realised_pnl": 0.0,
+                    "total_return_pct": 0.0,
+                    "wins": 0,
+                    "losses": 0,
+                    "win_rate": 0.0,
+                    "starting_equity": 0.0,
+                    "ending_equity": 0.0,
+                    "note": "No filled orders found on this account.",
+                },
+                "trades": [],
+                "equity_curve": [],
+                "by_symbol": [],
+            }
+
+        # ── 2. Sort chronologically ──
+        filled.sort(key=lambda x: x["filled_at"])
+
+        # ── 3. FIFO match: per symbol, queue buys, dequeue on sells ──
+        # For crypto short-selling, treat sell→buy as short.
+        from collections import defaultdict, deque
+
+        buy_queues: dict[str, deque] = defaultdict(deque)   # symbol -> deque of (qty, price)
+        sell_queues: dict[str, deque] = defaultdict(deque)  # for short positions
+
+        trades = []
+        running_pnl = 0.0
+
+        # Fetch starting account equity for equity curve base
+        try:
+            acct = client.get_account()
+            start_equity = float(acct.last_equity) if acct.last_equity else 10000.0
+        except Exception:
+            start_equity = 10000.0
+
+        equity = start_equity
+        equity_curve = []
+
+        for order in filled:
+            sym   = order["symbol"]
+            side  = order["side"].lower()
+            qty   = order["qty"]
+            price = order["price"]
+            date  = order["filled_at"][:10] if order["filled_at"] else "unknown"
+
+            if side == "buy":
+                # Check if we have an open short to close
+                if sell_queues[sym]:
+                    remaining = qty
+                    while sell_queues[sym] and remaining > 0:
+                        entry_qty, entry_price = sell_queues[sym][0]
+                        matched = min(entry_qty, remaining)
+                        # Short P&L: sold high, bought back low = entry_price - price
+                        pnl = (entry_price - price) * matched
+                        running_pnl += pnl
+                        equity += pnl
+                        remaining -= matched
+                        if matched >= entry_qty:
+                            sell_queues[sym].popleft()
+                        else:
+                            sell_queues[sym][0] = (entry_qty - matched, entry_price)
+                        trades.append({
+                            "date":    date,
+                            "symbol":  sym,
+                            "side":    "SHORT",
+                            "qty":     round(matched, 6),
+                            "entry":   round(entry_price, 4),
+                            "exit":    round(price, 4),
+                            "pnl":     round(pnl, 2),
+                            "result":  "WIN" if pnl > 0 else "LOSS",
+                        })
+                        equity_curve.append({"date": date, "equity": round(equity, 2)})
+                    # Any leftover qty becomes a long
+                    if remaining > 0:
+                        buy_queues[sym].append((remaining, price))
+                else:
+                    buy_queues[sym].append((qty, price))
+
+            elif side == "sell":
+                # Check if we have an open long to close
+                if buy_queues[sym]:
+                    remaining = qty
+                    while buy_queues[sym] and remaining > 0:
+                        entry_qty, entry_price = buy_queues[sym][0]
+                        matched = min(entry_qty, remaining)
+                        # Long P&L: bought low, sold high = price - entry_price
+                        pnl = (price - entry_price) * matched
+                        running_pnl += pnl
+                        equity += pnl
+                        remaining -= matched
+                        if matched >= entry_qty:
+                            buy_queues[sym].popleft()
+                        else:
+                            buy_queues[sym][0] = (entry_qty - matched, entry_price)
+                        trades.append({
+                            "date":    date,
+                            "symbol":  sym,
+                            "side":    "LONG",
+                            "qty":     round(matched, 6),
+                            "entry":   round(entry_price, 4),
+                            "exit":    round(price, 4),
+                            "pnl":     round(pnl, 2),
+                            "result":  "WIN" if pnl > 0 else "LOSS",
+                        })
+                        equity_curve.append({"date": date, "equity": round(equity, 2)})
+                    # Leftover qty = new short
+                    if remaining > 0:
+                        sell_queues[sym].append((remaining, price))
+                else:
+                    sell_queues[sym].append((qty, price))
+
+        # ── 4. Aggregate stats ──
+        wins   = len([t for t in trades if t["pnl"] > 0])
+        losses = len(trades) - wins
+
+        # Per-symbol breakdown
+        sym_stats: dict[str, dict] = {}
+        for t in trades:
+            s = t["symbol"]
+            if s not in sym_stats:
+                sym_stats[s] = {"symbol": s, "trades": 0, "pnl": 0.0, "wins": 0}
+            sym_stats[s]["trades"] += 1
+            sym_stats[s]["pnl"]    += t["pnl"]
+            if t["pnl"] > 0:
+                sym_stats[s]["wins"] += 1
+
+        by_symbol = sorted(
+            [{"symbol": k, "trades": v["trades"], "pnl": round(v["pnl"], 2),
+              "wins": v["wins"], "losses": v["trades"] - v["wins"],
+              "win_rate": round(v["wins"] / max(v["trades"], 1) * 100, 1)}
+             for k, v in sym_stats.items()],
+            key=lambda x: x["pnl"], reverse=True
+        )
+
+        # Ensure equity curve has at least start and end points
+        if not equity_curve:
+            equity_curve = [{"date": "start", "equity": round(start_equity, 2)}]
+
+        total_return_pct = round(running_pnl / max(start_equity, 1) * 100, 2) if start_equity else 0.0
+
+        return {
+            "account_summary": {
+                "total_orders_found": len(filled),
+                "matched_trades":     len(trades),
+                "total_realised_pnl": round(running_pnl, 2),
+                "total_return_pct":   total_return_pct,
+                "wins":               wins,
+                "losses":             losses,
+                "win_rate":           round(wins / max(len(trades), 1) * 100, 1),
+                "starting_equity":    round(start_equity, 2),
+                "ending_equity":      round(equity, 2),
+            },
+            "trades":       trades[-50:],   # last 50 matched round-trips
+            "equity_curve": equity_curve,
+            "by_symbol":    by_symbol,
+        }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
