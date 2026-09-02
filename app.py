@@ -179,10 +179,63 @@ class OwnerSettingsPayload(BaseModel):
     engine_mode: str = "hybrid"
 
 
+def global_trade_manager_loop():
+    """Permanent background thread that manages open positions when engines are stopped."""
+    while True:
+        try:
+            if not bot_running:
+                try:
+                    import crew_trader
+                    client = get_trading_client()
+                    positions = client.get_all_positions()
+                    if positions:
+                        add_log(f"🛡️ GLOBAL MANAGER: Evaluating {len(positions)} open positions...", "info")
+                        for p in positions:
+                            try:
+                                pnl = float(p.unrealized_pl)
+                                entry = float(p.avg_entry_price)
+                                sym = p.symbol
+                                
+                                decision_output = crew_trader.evaluate_open_position(sym, pnl, entry)
+                                
+                                data = {}
+                                if hasattr(decision_output, "json_dict"):
+                                    data = decision_output.json_dict
+                                elif isinstance(decision_output, dict):
+                                    data = decision_output
+                                elif hasattr(decision_output, "raw"):
+                                    try:
+                                        raw = decision_output.raw.strip()
+                                        if raw.startswith("```json"): raw = raw[7:-3]
+                                        elif raw.startswith("```"): raw = raw[3:-3]
+                                        data = json.loads(raw)
+                                    except:
+                                        pass
+                                
+                                action = data.get("final_action", "HOLD").upper()
+                                reason = data.get("reason", "No reason provided")
+                                
+                                if action == "CLOSE":
+                                    add_log(f"⚡ GLOBAL MANAGER: CLOSE {sym} (PnL: ${pnl:.2f}) | Reason: {reason}", "success")
+                                    client.close_position(sym)
+                            except Exception as inner_e:
+                                add_log(f"⚠️ Global Manager error for {sym}: {inner_e}", "warning")
+                except Exception as eval_e:
+                    # Ignore API keys missing on initial startup
+                    pass
+            time.sleep(60)
+        except Exception as e:
+            time.sleep(60)
+
+
 # ── App lifecycle ──
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    add_log("🦅 ELITE-BOT Backend Online", "success")
+    # Start Global Trade Manager Daemon
+    global_manager_thread = threading.Thread(target=global_trade_manager_loop, daemon=True)
+    global_manager_thread.start()
+    
+    add_log("🦅 ELITE-BOT Backend Online (Global Manager Active)", "success")
     yield
     add_log("🛑 Backend shutting down", "warning")
 
