@@ -4,31 +4,64 @@ import yfinance as yf
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 
-# --- ⚡ GROQ CLOUD AI SETUP ---
-# LiteLLM/CrewAI automatically looks up the GROQ_API_KEY environment variable.
-# It is set dynamically by app.py or in the deployment environment (e.g. Render dashboard).
+# --- ⚡ GROQ + OPENROUTER AI SETUP ---
+# LiteLLM/CrewAI automatically uses GROQ_API_KEY for Groq models.
+# For OpenRouter models, LiteLLM uses OPENROUTER_API_KEY.
 
-# Pointing CrewAI to Groq's model rotation pool to automatically bypass rate limits
+# Set OpenRouter key so LiteLLM can find it
+_or_key = os.environ.get("OPENROUTER_API_KEY", "")
+if _or_key:
+    os.environ["OPENROUTER_API_KEY"] = _or_key
+
+# Full model rotation pool: Groq first, then OpenRouter as overflow
 GROQ_MODELS = [
-    "groq/llama-3.1-8b-instant",
-    "groq/llama-3.3-70b-versatile",
-    "groq/llama3-70b-8192",
-    "groq/gemma2-9b-it"
+    # --- Groq Models (fast, 8k TPM limit each) ---
+    "groq/openai/gpt-oss-120b",
+    "groq/qwen/qwen3.8-27b",
+    "groq/openai/gpt-oss-20b",
+    "groq/qwen/qwen3.6-27b",
+    "groq/compound",
+    "groq/compound-mini",
+    "groq/allam-2-7b",
+    # --- OpenRouter Free Models (overflow when Groq hits limits) ---
+    "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+    "openrouter/nvidia/nemotron-3.5-lightning:free",
+    "openrouter/minimax/minimax-m3:free",
+    "openrouter/minimax/minimax-m2.7:free",
+    "openrouter/google/gemma-4-31b-it:free",
+    "openrouter/google/gemma-4-26b-a4b-it:free",
+    "openrouter/meta-llama/llama-3.3-70b-instruct:free",
+    "openrouter/meta-llama/llama-3.1-8b-instruct:free",
+    "openrouter/mistralai/mistral-7b-instruct:free",
+    "openrouter/deepseek/deepseek-r1:free",
+    "openrouter/qwen/qwen3-14b:free",
+    "openrouter/z-ai/glm-5.2:free",
+    "openrouter/thinkingmachines/inkling:free",
+    "openrouter/thinkingmachines/inkling-small:free",
+    "openrouter/poolside/laguna-s-2.1:free",
+    "openrouter/liquid/lfm-2.5-2.6b:free",
 ]
 current_model_idx = 0
+
+def _make_llm(model: str) -> LLM:
+    """Create an LLM instance, injecting the correct API key for the provider."""
+    if model.startswith("openrouter/"):
+        return LLM(model=model, temperature=0.1, api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+                   base_url="https://openrouter.ai/api/v1")
+    return LLM(model=model, temperature=0.1)
 
 def is_retryable_exception(e) -> bool:
     """Detect if an exception is rate limit, model not found, or temporary API error."""
     err_str = str(e).lower()
     return any(keyword in err_str for keyword in [
         "rate limit", "429", "rate_limit", "limit exceeded", "ratelimit", "too many requests",
-        "notfounderror", "model_not_found", "does not exist", "service unavailable", "503"
+        "notfounderror", "model_not_found", "does not exist", "service unavailable", "503",
+        "model_decommissioned", "decommissioned"
     ])
 
-groq_llm = LLM(
-    model=GROQ_MODELS[current_model_idx],
-    temperature=0.1
-)
+groq_llm = _make_llm(GROQ_MODELS[current_model_idx])
+
 
 # --- 🛠️ TOOLS ---
 @tool("live_stock_data_tool")
@@ -257,7 +290,7 @@ def evaluate_smart_opportunity(ticker_a, ticker_b=None, technicals=None, quant_c
                 new_model = GROQ_MODELS[current_model_idx]
                 print(f"   ⚠️ Model/Rate error on '{groq_llm.model}': {e}")
                 print(f"   🔄 Rotating to fallback model: '{new_model}' and retrying immediately...")
-                groq_llm.model = new_model
+                groq_llm = _make_llm(new_model)
                 
                 # Re-bind agents to use the updated LLM configuration
                 for agent in [quant_agent, analyst_agent, bear_analyst_agent, cio_agent]:
@@ -335,7 +368,7 @@ def evaluate_open_position(ticker, current_pnl, entry_price, quant_context=""):
                 new_model = GROQ_MODELS[current_model_idx]
                 print(f"   ⚠️ Model/Rate error on '{groq_llm.model}': {e}")
                 print(f"   🔄 Rotating to fallback model: '{new_model}' and retrying immediately...")
-                groq_llm.model = new_model
+                groq_llm = _make_llm(new_model)
                 trade_manager_agent.llm = groq_llm
             else:
                 print(f"   ❌ CrewAI failed with error: {e}")
