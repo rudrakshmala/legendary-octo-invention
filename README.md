@@ -1,4 +1,10 @@
 # 🦅 Elite-Bot — Autonomous AI Trading Platform
+ONLY FOR THE JUDGES TO TEST THE ACCOUNT PORTFOLIO
+
+ALPACA_API_KEY=PKHTCUNVHOM723G3HDLJZLPMA3
+ALPACA_SECRET_KEY=3UQCrgVcs8wSR3Nfuk9nYsx9UbzMdCfSVRLLoATzbBCX
+ALPACA_PAPER=true
+
 
 A multi-asset, time-aware algorithmic trading platform combining:
 - **Statistical Arbitrage** (Pairs Trading / Z-Score)
