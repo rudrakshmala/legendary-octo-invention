@@ -26,6 +26,9 @@ const api = {
   updateBlacklist: (symbol, action) => request('/api/settings/blacklist', { 
     method: 'POST', body: JSON.stringify({ symbol, action }) 
   }),
+  getRiskConfig: () => request('/api/risk-config'),
+  setRiskConfig: (data) => request('/api/risk-config', { method: 'POST', body: JSON.stringify(data) }),
+
 
   // Account
   getAccount: () => request('/api/account'),

@@ -17,6 +17,20 @@ export default function SettingsPage() {
   const [validation, setValidation] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  // ── Risk Configuration ──
+  const [riskConfig, setRiskConfig] = useState({
+    HARD_STOP_LOSS: -150.0,
+    SOFT_STOP_LOSS: -120.0,
+    DAILY_PROFIT_TARGET: 2000.0,
+    MAX_SECTOR_EXPOSURE: 0.25,
+    TRAILING_STOP_PCT: 2.0,
+    POSITION_RISK_PCT: 10.0,
+    FEE_PCT: 0.1,
+  });
+  const [riskSaving, setRiskSaving] = useState(false);
+  const [riskMsg, setRiskMsg] = useState(null);
+
+
   // ── Owner (Personal) Trading Rules ──
   const [ownerSettings, setOwnerSettings] = useState({
     starting_capital_usd: 100,
@@ -41,6 +55,8 @@ export default function SettingsPage() {
       .then(r => r.json())
       .then(d => setOwnerSettings(d))
       .catch(() => {});
+    // Load risk configuration
+    api.getRiskConfig().then(setRiskConfig).catch(() => {});
   }, []);
 
   async function handleSave() {
@@ -93,6 +109,18 @@ export default function SettingsPage() {
       setOwnerMsg({ success: false, msg: e.message });
     }
     setOwnerSaving(false);
+  }
+
+  async function handleRiskSave() {
+    setRiskSaving(true);
+    setRiskMsg(null);
+    try {
+      await api.setRiskConfig(riskConfig);
+      setRiskMsg({ success: true, msg: 'Risk configuration saved successfully!' });
+    } catch (e) {
+      setRiskMsg({ success: false, msg: e.message });
+    }
+    setRiskSaving(false);
   }
 
   return (
@@ -274,36 +302,97 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Risk Config Info */}
+      {/* Risk Configuration (editable) */}
       <div className="card">
         <div className="card-header">
           <span className="card-title"><Sliders size={13} style={{ marginRight: 6 }} /> Risk Configuration</span>
         </div>
-        <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-          <table className="data-table">
-            <tbody>
-              <tr>
-                <td style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-primary)' }}>Hard Stop Loss</td>
-                <td className="negative">-$100.00</td>
-              </tr>
-              <tr>
-                <td style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-primary)' }}>Soft Stop Loss</td>
-                <td className="negative">-$75.00</td>
-              </tr>
-              <tr>
-                <td style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-primary)' }}>Daily Profit Target</td>
-                <td className="positive">+$1,000.00</td>
-              </tr>
-              <tr>
-                <td style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-primary)' }}>Max Sector Exposure</td>
-                <td>25%</td>
-              </tr>
-              <tr>
-                <td style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-primary)' }}>Fee Per Side</td>
-                <td>0.1%</td>
-              </tr>
-            </tbody>
-          </table>
+        <div style={{ padding: '8px 0' }}>
+          <div style={{
+            padding: '10px 14px', borderRadius: 'var(--radius-md)', marginBottom: '16px',
+            background: 'rgba(239,83,80,0.06)', fontSize: '12px', color: 'var(--accent-bear)',
+            display: 'flex', alignItems: 'center', gap: '8px'
+          }}>
+            <Info size={14} style={{ flexShrink: 0 }} />
+            Changes take effect immediately in the running bot. Negative values for stop losses.
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div className="form-group">
+              <label>Hard Stop Loss ($)</label>
+              <input type="number" step="0.01"
+                value={riskConfig.HARD_STOP_LOSS}
+                onChange={e => setRiskConfig(c => ({ ...c, HARD_STOP_LOSS: parseFloat(e.target.value) || 0 }))}
+              />
+              <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Kill switch — instant liquidation</span>
+            </div>
+
+            <div className="form-group">
+              <label>Soft Stop Loss ($)</label>
+              <input type="number" step="0.01"
+                value={riskConfig.SOFT_STOP_LOSS}
+                onChange={e => setRiskConfig(c => ({ ...c, SOFT_STOP_LOSS: parseFloat(e.target.value) || 0 }))}
+              />
+              <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Warning — reduce position by 50%</span>
+            </div>
+
+            <div className="form-group">
+              <label>Daily Profit Target ($)</label>
+              <input type="number" step="0.01" min="0"
+                value={riskConfig.DAILY_PROFIT_TARGET}
+                onChange={e => setRiskConfig(c => ({ ...c, DAILY_PROFIT_TARGET: parseFloat(e.target.value) || 0 }))}
+              />
+              <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Lock-in — stop trading for the day</span>
+            </div>
+
+            <div className="form-group">
+              <label>Max Sector Exposure (0–1)</label>
+              <input type="number" step="0.01" min="0" max="1"
+                value={riskConfig.MAX_SECTOR_EXPOSURE}
+                onChange={e => setRiskConfig(c => ({ ...c, MAX_SECTOR_EXPOSURE: parseFloat(e.target.value) || 0 }))}
+              />
+              <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>e.g. 0.25 = max 25% in one sector</span>
+            </div>
+
+            <div className="form-group">
+              <label>Trailing Stop (%)</label>
+              <input type="number" step="0.1" min="0"
+                value={riskConfig.TRAILING_STOP_PCT}
+                onChange={e => setRiskConfig(c => ({ ...c, TRAILING_STOP_PCT: parseFloat(e.target.value) || 0 }))}
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Position Risk (% of buying power)</label>
+              <input type="number" step="0.1" min="0" max="100"
+                value={riskConfig.POSITION_RISK_PCT}
+                onChange={e => setRiskConfig(c => ({ ...c, POSITION_RISK_PCT: parseFloat(e.target.value) || 0 }))}
+              />
+            </div>
+
+            <div className="form-group" style={{ gridColumn: 'span 2' }}>
+              <label>Fee Per Side (%)</label>
+              <input type="number" step="0.01" min="0"
+                value={riskConfig.FEE_PCT}
+                onChange={e => setRiskConfig(c => ({ ...c, FEE_PCT: parseFloat(e.target.value) || 0 }))}
+              />
+              <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>0.1 = 0.1% fee per trade side</span>
+            </div>
+          </div>
+
+          {riskMsg && (
+            <div className={`validation-result ${riskMsg.success ? 'success' : 'error'}`} style={{ marginTop: 8 }}>
+              {riskMsg.success ? '✅' : '❌'} {riskMsg.msg}
+            </div>
+          )}
+
+          <button className="btn btn-primary"
+            onClick={handleRiskSave}
+            disabled={riskSaving}
+            style={{ marginTop: 12, width: '100%', justifyContent: 'center' }}
+          >
+            {riskSaving ? 'Saving...' : '🛡️ Save Risk Configuration'}
+          </button>
         </div>
       </div>
 

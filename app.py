@@ -422,6 +422,73 @@ def save_owner_settings(payload: OwnerSettingsPayload):
     return {"msg": "Owner settings saved", **data}
 
 # ═══════════════════════════════════════════
+# 1.8. RISK CONFIGURATION
+# ═══════════════════════════════════════════
+
+RISK_CONFIG_FILE = "risk_config.json"
+RISK_CONFIG_DEFAULTS = {
+    "HARD_STOP_LOSS": -150.0,
+    "SOFT_STOP_LOSS": -120.0,
+    "DAILY_PROFIT_TARGET": 2000.0,
+    "MAX_SECTOR_EXPOSURE": 0.25,
+    "TRAILING_STOP_PCT": 2.0,
+    "POSITION_RISK_PCT": 10.0,
+    "FEE_PCT": 0.1,
+}
+
+class RiskConfigPayload(BaseModel):
+    HARD_STOP_LOSS: float = -150.0
+    SOFT_STOP_LOSS: float = -120.0
+    DAILY_PROFIT_TARGET: float = 2000.0
+    MAX_SECTOR_EXPOSURE: float = 0.25
+    TRAILING_STOP_PCT: float = 2.0
+    POSITION_RISK_PCT: float = 10.0
+    FEE_PCT: float = 0.1
+
+@app.get("/api/risk-config")
+def get_risk_config():
+    """Return current risk configuration values."""
+    if os.path.exists(RISK_CONFIG_FILE):
+        try:
+            with open(RISK_CONFIG_FILE, "r") as f:
+                saved = json.load(f)
+                return {**RISK_CONFIG_DEFAULTS, **saved}
+        except Exception:
+            pass
+    # Fallback: read from config.py
+    try:
+        import config
+        rc = getattr(config, "RISK_CONFIG", {})
+        return {**RISK_CONFIG_DEFAULTS, **rc}
+    except Exception:
+        pass
+    return RISK_CONFIG_DEFAULTS
+
+@app.post("/api/risk-config")
+def save_risk_config(payload: RiskConfigPayload):
+    """Save risk configuration to disk and update the running bot's config module."""
+    data = payload.dict()
+    with open(RISK_CONFIG_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+    # Patch the running config module so the bot picks it up immediately
+    try:
+        import config as _cfg
+        _cfg.RISK_CONFIG.update(data)
+        _cfg.DAILY_PROFIT_TARGET = data["DAILY_PROFIT_TARGET"]
+        _cfg.DAILY_STOP_LOSS = data["HARD_STOP_LOSS"]
+        _cfg.TRAILING_STOP_PCT = data["TRAILING_STOP_PCT"]
+        _cfg.POSITION_RISK_PCT = data["POSITION_RISK_PCT"]
+        _cfg.FEE_PCT = data["FEE_PCT"] / 100.0
+    except Exception:
+        pass
+    add_log(
+        f"🛡️ Risk config updated: HardStop=${data['HARD_STOP_LOSS']}, "
+        f"SoftStop=${data['SOFT_STOP_LOSS']}, Target=${data['DAILY_PROFIT_TARGET']}",
+        "success"
+    )
+    return {"msg": "Risk configuration saved", **data}
+
+# ═══════════════════════════════════════════
 # 2. ACCOUNT & PORTFOLIO
 # ═══════════════════════════════════════════
 
